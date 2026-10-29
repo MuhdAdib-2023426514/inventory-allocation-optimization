@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 from scipy.optimize import LinearConstraint, milp
+from scipy.sparse import csc_matrix
 
 
 @dataclass(frozen=True)
@@ -246,8 +247,11 @@ def solve_deterministic_milp(
             integrality[idx] = 1
             ub[idx] = float(max(0, min(int(inst.K[s, p]), int(inst.C[s]) - int(inst.I[s, p]))))
 
-    rows: list[np.ndarray] = []
+    row_ind: list[int] = []
+    col_ind: list[int] = []
+    data_val: list[float] = []
     b_u_list: list[float] = []
+    r_idx = 0
 
     # 1. Shortage linearization: -x_{sp} - u_{sp} <= -(D_{sp} - I_{sp})
     # 2. Excess linearization:    x_{sp} - v_{sp} <= D_{sp} - I_{sp}
@@ -256,37 +260,39 @@ def solve_deterministic_milp(
             idx = s * P + p
             net_d = float(D_target[s, p] - inst.I[s, p])
 
-            row_u = np.zeros(num_vars, dtype=float)
-            row_u[idx] = -1.0
-            row_u[N + idx] = -1.0
-            rows.append(row_u)
+            row_ind.extend([r_idx, r_idx])
+            col_ind.extend([idx, N + idx])
+            data_val.extend([-1.0, -1.0])
             b_u_list.append(-net_d)
+            r_idx += 1
 
-            row_v = np.zeros(num_vars, dtype=float)
-            row_v[idx] = 1.0
-            row_v[2 * N + idx] = -1.0
-            rows.append(row_v)
+            row_ind.extend([r_idx, r_idx])
+            col_ind.extend([idx, 2 * N + idx])
+            data_val.extend([1.0, -1.0])
             b_u_list.append(net_d)
+            r_idx += 1
 
     # 3. Warehouse supply per SKU: sum_s x_{sp} <= W_p
     for p in range(P):
-        row_w = np.zeros(num_vars, dtype=float)
         for s in range(S):
-            row_w[s * P + p] = 1.0
-        rows.append(row_w)
+            row_ind.append(r_idx)
+            col_ind.append(s * P + p)
+            data_val.append(1.0)
         b_u_list.append(float(inst.W[p]))
+        r_idx += 1
 
     # 4. Store total capacity: sum_p x_{sp} <= C_s - sum_p I_{sp}
     for s in range(S):
-        row_c = np.zeros(num_vars, dtype=float)
         for p in range(P):
-            row_c[s * P + p] = 1.0
-        rows.append(row_c)
+            row_ind.append(r_idx)
+            col_ind.append(s * P + p)
+            data_val.append(1.0)
         rem_cap = float(inst.C[s] - np.sum(inst.I[s, :]))
         b_u_list.append(rem_cap)
+        r_idx += 1
 
-    A = np.vstack(rows)
-    b_l = np.full(len(b_u_list), -np.inf, dtype=float)
+    A = csc_matrix((data_val, (row_ind, col_ind)), shape=(r_idx, num_vars), dtype=float)
+    b_l = np.full(r_idx, -np.inf, dtype=float)
     b_u = np.array(b_u_list, dtype=float)
 
     res = milp(
@@ -356,40 +362,45 @@ def solve_nominal_marginal_cost_milp(
     lb = np.zeros(num_vars, dtype=float)
     ub = np.ones(num_vars, dtype=float)
 
-    rows: list[np.ndarray] = []
+    row_ind: list[int] = []
+    col_ind: list[int] = []
+    data_val: list[float] = []
     b_u_list: list[float] = []
+    r_idx = 0
 
     # 1. Prefix constraints: y_{s,p,k+1} - y_{s,p,k} <= 0
     for s in range(S):
         for p in range(P):
             cap = int(inst.K[s, p])
             for k in range(1, cap):
-                row = np.zeros(num_vars, dtype=float)
-                row[var_map[(s, p, k + 1)]] = 1.0
-                row[var_map[(s, p, k)]] = -1.0
-                rows.append(row)
+                row_ind.extend([r_idx, r_idx])
+                col_ind.extend([var_map[(s, p, k + 1)], var_map[(s, p, k)]])
+                data_val.extend([1.0, -1.0])
                 b_u_list.append(0.0)
+                r_idx += 1
 
     # 2. Warehouse supply per SKU: sum_{s,k} y_{s,p,k} <= W_p
     for p in range(P):
-        row = np.zeros(num_vars, dtype=float)
         for s in range(S):
             for k in range(1, int(inst.K[s, p]) + 1):
-                row[var_map[(s, p, k)]] = 1.0
-        rows.append(row)
+                row_ind.append(r_idx)
+                col_ind.append(var_map[(s, p, k)])
+                data_val.append(1.0)
         b_u_list.append(float(inst.W[p]))
+        r_idx += 1
 
     # 3. Store total capacity: sum_{p,k} y_{s,p,k} <= C_s - sum_p I_{s,p}
     for s in range(S):
-        row = np.zeros(num_vars, dtype=float)
         for p in range(P):
             for k in range(1, int(inst.K[s, p]) + 1):
-                row[var_map[(s, p, k)]] = 1.0
-        rows.append(row)
+                row_ind.append(r_idx)
+                col_ind.append(var_map[(s, p, k)])
+                data_val.append(1.0)
         b_u_list.append(float(inst.C[s] - np.sum(inst.I[s, :])))
+        r_idx += 1
 
-    A = np.vstack(rows)
-    b_l = np.full(len(b_u_list), -np.inf, dtype=float)
+    A = csc_matrix((data_val, (row_ind, col_ind)), shape=(r_idx, num_vars), dtype=float)
+    b_l = np.full(r_idx, -np.inf, dtype=float)
     b_u = np.array(b_u_list, dtype=float)
 
     res = milp(

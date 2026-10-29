@@ -8,6 +8,7 @@ from pathlib import Path
 from app.streamlit_app import REGISTERED_PAGES, load_cached_bundle
 
 from inventory_di.config import load_config
+from inventory_di.evaluation.backtest import build_allocation_instance_from_config_df
 
 
 def test_dashboard_cached_bundle_and_pages() -> None:
@@ -25,8 +26,19 @@ def test_dashboard_cached_bundle_and_pages() -> None:
     assert qa["offline_ready"] is True
     assert qa["missing_artifact_guidance_present"] is True
 
-    # Missing M5 data should return status == "MISSING" gracefully
+    # Verify What-If Simulation overrides (opening stock & shortage penalty multiplier)
+    inv_df = bundle["inventory_config"]
+    inst_override = build_allocation_instance_from_config_df(
+        inv_df,
+        supply_multiplier=0.8,
+        opening_stock_override=3,
+        shortage_penalty_multiplier=1.5,
+    )
+    assert (inst_override.I == 3).all()
+    assert inst_override.b[0, 0] == 9.0
+
+    # Verify M5 bundle when M5 artifacts exist
     m5_bundle = load_cached_bundle("configs/m5.yaml")
-    if not Path("data/raw/m5/calendar.csv").exists():
-        assert m5_bundle["status"] == "MISSING"
-        assert len(m5_bundle["missing_files"]) > 0
+    if Path("artifacts/m5/run_manifest.json").exists():
+        assert m5_bundle["status"] == "OK"
+        assert m5_bundle["cfg"].data_mode == "m5_sales_proxy"

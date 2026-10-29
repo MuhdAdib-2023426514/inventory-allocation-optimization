@@ -81,6 +81,16 @@ def load_cached_bundle(config_path: str) -> dict[str, Any]:
             (art_dir / "cached_origin_bundles.json").read_text(encoding="utf-8")
         ),
         "run_manifest": json.loads((art_dir / "run_manifest.json").read_text(encoding="utf-8")),
+        "multi_seed_summary": (
+            pd.read_parquet(art_dir / "multi_seed_summary.parquet")
+            if (art_dir / "multi_seed_summary.parquet").exists()
+            else None
+        ),
+        "carryover_leadtime": (
+            pd.read_parquet(art_dir / "carryover_leadtime_metrics.parquet")
+            if (art_dir / "carryover_leadtime_metrics.parquet").exists()
+            else None
+        ),
     }
 
 
@@ -331,20 +341,49 @@ def render_page_d(bundle: dict[str, Any]) -> None:
         value=0.50,
         key="page_d_rw",
     )
-    sel_supply_mult = st.select_slider(
+
+    st.markdown("#### Operational What-If Simulation Controls (Stock, Display/Price Lift & Priority)")
+    w1, w2, w3, w4 = st.columns(4)
+    sel_supply_mult = w1.select_slider(
         "Warehouse Supply Scarcity Multiplier",
         options=[0.6, 0.8, 1.0, 1.2],
         value=1.0,
         key="page_d_supply",
     )
+    sel_open_stock = w2.select_slider(
+        "Opening Store Stock Override (I_sp units)",
+        options=[0, 1, 2, 3, 5],
+        value=0,
+        key="page_d_open_stock",
+    )
+    sel_promo_lift = w3.select_slider(
+        "Pricing / Display Demand Uplift (%)",
+        options=[-20, -10, 0, 10, 25, 50],
+        value=0,
+        key="page_d_promo_lift",
+    )
+    sel_shortage_mult = w4.select_slider(
+        "Shortage Penalty Priority Multiplier (b_sp)",
+        options=[0.5, 1.0, 1.5, 2.0],
+        value=1.0,
+        key="page_d_shortage_mult",
+    )
 
     # Re-solve locally using cached scenarios (fast <50ms MILP solve; zero model retraining)
     ob = origins_bundle[sel_origin]
-    scen_arr = np.array(
-        ob["dfl_scenarios"] if sel_family == "dfl_dro" else ob["sup_scenarios"], dtype=int
+    demand_scale = 1.0 + (float(sel_promo_lift) / 100.0)
+    scen_base = np.array(
+        ob["dfl_scenarios"] if sel_family == "dfl_dro" else ob["sup_scenarios"], dtype=float
     )
-    D_real = np.array(ob["D_realized"], dtype=int)
-    inst_mod = build_allocation_instance_from_config_df(inv_df, supply_multiplier=float(sel_supply_mult))
+    scen_arr = np.maximum(0, np.rint(scen_base * demand_scale)).astype(int)
+    D_real_base = np.array(ob["D_realized"], dtype=float)
+    D_real = np.maximum(0, np.rint(D_real_base * demand_scale)).astype(int)
+    inst_mod = build_allocation_instance_from_config_df(
+        inv_df,
+        supply_multiplier=float(sel_supply_mult),
+        opening_stock_override=int(sel_open_stock),
+        shortage_penalty_multiplier=float(sel_shortage_mult),
+    )
 
     dro_live = solve_scenario_reweighting_dro_milp(
         scen_arr, inst_mod, alpha=float(sel_alpha), risk_weight=float(sel_rw)
@@ -375,6 +414,31 @@ def render_page_d(bundle: dict[str, Any]) -> None:
         f"{dro_live.solver_status} ({100.0 * real_live.fill_rate:.1f}% fill)",
         help=f"Feasible: {dro_live.is_feasible}, Oracle Regret: {real_live.total_cost_mu - oracle_live_cost:.2f} MU",
     )
+
+    with st.expander("Inspect Live Simulated Store-by-SKU Shipment Plan & Download CSV", expanded=False):
+        sim_rows = []
+        for s_i, s_id in enumerate(inst_mod.stores):
+            for p_i, p_id in enumerate(inst_mod.skus):
+                sim_rows.append(
+                    {
+                        "store_id": s_id,
+                        "sku_id": p_id,
+                        "opening_stock_units": int(inst_mod.I[s_i, p_i]),
+                        "warehouse_supply_units": int(inst_mod.W[p_i]),
+                        "store_sku_unit_cap": int(inst_mod.K[s_i, p_i]),
+                        "allocated_units": int(dro_live.x[s_i, p_i]),
+                        "simulated_realized_demand_units": int(D_real[s_i, p_i]),
+                        "unit_shortage_penalty_mu": float(inst_mod.b[s_i, p_i]),
+                    }
+                )
+        sim_df = pd.DataFrame(sim_rows)
+        st.dataframe(sim_df, use_container_width=True)
+        st.download_button(
+            label="Download What-If Simulated Shipment Plan (Excel-Compatible CSV)",
+            data=sim_df.to_csv(index=False).encode("utf-8"),
+            file_name=f"what_if_simulation_{sel_origin}.csv",
+            mime="text/csv",
+        )
 
     st.plotly_chart(
         plot_risk_cost_pareto(sens_df, supply_multiplier=float(sel_supply_mult)),
@@ -429,7 +493,17 @@ def render_page_e(bundle: dict[str, Any]) -> None:
     ]
     st.dataframe(piv, use_container_width=True)
 
-    with st.expander("Run Reproducibility Manifest & Checksums"):
+    if bundle.get("multi_seed_summary") is not None:
+        st.subheader("Multi-Seed Reliability Across Seeds (`[42, 101, 202]`)")
+        ms_df: pd.DataFrame = bundle["multi_seed_summary"]
+        st.dataframe(ms_df, use_container_width=True)
+
+    if bundle.get("carryover_leadtime") is not None:
+        st.subheader("Rolling Inventory Carryover & Lead-Time (`L=0` vs `L=1` Week) Evaluation")
+        co_df: pd.DataFrame = bundle["carryover_leadtime"]
+        st.dataframe(co_df, use_container_width=True)
+
+    with st.expander("Run Reproducibility Manifest, Validation DRO Tuning & Checksums"):
         st.json(manifest)
 
 

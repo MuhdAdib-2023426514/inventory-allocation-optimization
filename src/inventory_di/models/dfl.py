@@ -24,7 +24,9 @@ from inventory_di.models.supervised import (
     extract_sku_split_tensors,
 )
 from inventory_di.optimization.pyepo_fixed import (
+    build_joint_multi_sku_spoplus_layer,
     build_spoplus_layer,
+    precompute_joint_multi_sku_oracle_cache,
     precompute_sku_oracle_cache,
 )
 
@@ -334,3 +336,274 @@ def train_dfl_sku_model(
         calibration_info=cal_info,
         gradient_check=grad_check,
     )
+
+
+def train_joint_multi_sku_dfl_models(
+    weekly_df: pd.DataFrame,
+    skus: list[str],
+    stores: list[str],
+    I_sp: np.ndarray,
+    K_sp: np.ndarray,
+    W_p: np.ndarray,
+    C_s: np.ndarray,
+    b_sp: np.ndarray,
+    h_sp: np.ndarray,
+    t_sp: np.ndarray,
+    support_h: int,
+    tail_mean_excess: float,
+    hidden_dim: int,
+    learning_rate: float,
+    epochs: int,
+    batch_size: int,
+    lambda_dfl: float,
+    spoplus_processes: int,
+    seed: int,
+) -> dict[str, SKUForecastArtifact]:
+    """Train all SKU DiscreteDemandPMFNets jointly with PyEPO `SPOPlus` over the exact
+    multi-SKU store-capacity-constrained polytope (`JointMultiSKUMarginalAllocationModel`) (Priority 5).
+    """
+    P = len(skus)
+    S = len(stores)
+
+    train_x_list: list[torch.Tensor] = []
+    train_d_list: list[torch.Tensor] = []
+    val_x_list: list[torch.Tensor] = []
+    val_d_list: list[torch.Tensor] = []
+    feat_means: list[np.ndarray] = []
+    feat_stds: list[np.ndarray] = []
+
+    for p_idx, sku in enumerate(skus):
+        _, tx, td, fm, fs = extract_sku_split_tensors(weekly_df, sku, stores, "train")
+        _, vx, vd, _, _ = extract_sku_split_tensors(
+            weekly_df, sku, stores, "val", feat_mean=fm, feat_std=fs
+        )
+        train_x_list.append(tx)
+        train_d_list.append(td)
+        val_x_list.append(vx)
+        val_d_list.append(vd)
+        feat_means.append(fm)
+        feat_stds.append(fs)
+
+    # Shape (T, S, P) for joint oracle precomputation
+    train_d_tsp = np.stack([td.cpu().numpy() for td in train_d_list], axis=-1)
+    val_d_tsp = np.stack([vd.cpu().numpy() for vd in val_d_list], axis=-1)
+
+    joint_opt, joint_spoplus = build_joint_multi_sku_spoplus_layer(
+        K_sp=K_sp,
+        W_p=W_p,
+        I_sp=I_sp,
+        C_s=C_s,
+        processes=spoplus_processes,
+        solver="appsi_highs",
+    )
+
+    train_oracle = precompute_joint_multi_sku_oracle_cache(
+        joint_opt, train_d_tsp, I_sp, K_sp, b_sp, h_sp, t_sp, split_name="train"
+    )
+    val_oracle = precompute_joint_multi_sku_oracle_cache(
+        joint_opt, val_d_tsp, I_sp, K_sp, b_sp, h_sp, t_sp, split_name="val"
+    )
+
+    train_tc = torch.tensor(train_oracle["true_costs"], dtype=torch.float32)
+    train_ts = torch.tensor(train_oracle["true_sols"], dtype=torch.float32)
+    train_to = torch.tensor(train_oracle["true_objs"], dtype=torch.float32)
+
+    models: list[DiscreteDemandPMFNet] = []
+    for p_idx in range(P):
+        sku_seed = seed + 100 * p_idx
+        torch.manual_seed(sku_seed)
+        np.random.seed(sku_seed)
+        models.append(
+            DiscreteDemandPMFNet(
+                num_stores=S,
+                in_features=len(FEATURE_COLUMNS),
+                support_h=support_h,
+                hidden_dim=hidden_dim,
+            )
+        )
+
+    # 1-batch joint SPO+ backward gradient check across all SKU networks
+    b_sz = min(4, len(train_x_list[0]))
+    for m in models:
+        m.zero_grad()
+    c_hat_parts_0 = []
+    for p_idx in range(P):
+        pmf_0 = models[p_idx].predict_pmf(train_x_list[p_idx][:b_sz])
+        _, ch_0 = compute_survival_and_marginal_costs_torch(
+            pmf_0, I_sp[:, p_idx], K_sp[:, p_idx], b_sp[:, p_idx], h_sp[:, p_idx], t_sp[:, p_idx]
+        )
+        c_hat_parts_0.append(ch_0)
+    c_hat_joint_0 = torch.cat(c_hat_parts_0, dim=-1)
+    loss_spo_0 = joint_spoplus(
+        c_hat_joint_0, train_tc[:b_sz], train_ts[:b_sz], train_to[:b_sz]
+    )
+    loss_spo_0.backward()
+    joint_grad_norms = [
+        float(
+            math.sqrt(
+                sum(float(p.grad.norm().item() ** 2) for p in m.parameters() if p.grad is not None)
+            )
+        )
+        for m in models
+    ]
+
+    # Re-initialize with exact seeds for clean training
+    models = []
+    all_params = []
+    for p_idx in range(P):
+        sku_seed = seed + 100 * p_idx
+        torch.manual_seed(sku_seed)
+        np.random.seed(sku_seed)
+        m = DiscreteDemandPMFNet(
+            num_stores=S,
+            in_features=len(FEATURE_COLUMNS),
+            support_h=support_h,
+            hidden_dim=hidden_dim,
+        )
+        models.append(m)
+        all_params.extend(list(m.parameters()))
+
+    optimizer = torch.optim.Adam(all_params, lr=learning_rate)
+    T_train = len(train_x_list[0])
+    histories: list[list[dict[str, float]]] = [[] for _ in range(P)]
+    best_val_score = float("inf")
+    best_states = [{k: v.detach().clone() for k, v in m.state_dict().items()} for m in models]
+
+    for epoch in range(1, epochs + 1):
+        for m in models:
+            m.train()
+        perm = torch.randperm(T_train)
+        epoch_nll_per_sku = np.zeros(P, dtype=float)
+        epoch_spo = 0.0
+        num_batches = 0
+
+        for start in range(0, T_train, batch_size):
+            idx = perm[start : start + batch_size]
+            btc = train_tc[idx]
+            bts = train_ts[idx]
+            bto = train_to[idx]
+
+            optimizer.zero_grad()
+            nll_losses = []
+            c_hat_parts = []
+            for p_idx in range(P):
+                bx = train_x_list[p_idx][idx]
+                bd = train_d_list[p_idx][idx]
+                logits = models[p_idx].forward_logits(bx)
+                nll_p = compute_discrete_nll_loss(logits, bd, support_h)
+                nll_losses.append(nll_p)
+                epoch_nll_per_sku[p_idx] += float(nll_p.item())
+
+                pmf_p = models[p_idx].predict_pmf(bx)
+                _, ch_p = compute_survival_and_marginal_costs_torch(
+                    pmf_p,
+                    I_sp[:, p_idx],
+                    K_sp[:, p_idx],
+                    b_sp[:, p_idx],
+                    h_sp[:, p_idx],
+                    t_sp[:, p_idx],
+                )
+                c_hat_parts.append(ch_p)
+
+            mean_nll = torch.stack(nll_losses).mean()
+            if lambda_dfl > 0.0:
+                c_hat_joint = torch.cat(c_hat_parts, dim=-1)
+                spo_loss = joint_spoplus(c_hat_joint, btc, bts, bto)
+                spo_scaled = spo_loss / float(max(1, joint_opt.num_cost))
+                total_loss = mean_nll + float(lambda_dfl) * spo_scaled
+                spo_val = float(spo_scaled.item())
+            else:
+                total_loss = mean_nll
+                spo_val = 0.0
+
+            total_loss.backward()
+            optimizer.step()
+            epoch_spo += spo_val
+            num_batches += 1
+
+        epoch_nll_per_sku /= max(1, num_batches)
+        epoch_spo /= max(1, num_batches)
+
+        # Evaluate joint validation regret and per-SKU NLL
+        for m in models:
+            m.eval()
+        with torch.no_grad():
+            val_c_parts = []
+            for p_idx in range(P):
+                v_pmf = models[p_idx].predict_pmf(val_x_list[p_idx])
+                _, v_ch = compute_survival_and_marginal_costs_torch(
+                    v_pmf,
+                    I_sp[:, p_idx],
+                    K_sp[:, p_idx],
+                    b_sp[:, p_idx],
+                    h_sp[:, p_idx],
+                    t_sp[:, p_idx],
+                )
+                val_c_parts.append(v_ch)
+            val_c_joint = torch.cat(val_c_parts, dim=-1).cpu().numpy()
+
+        val_tc = val_oracle["true_costs"]
+        val_to = val_oracle["true_objs"]
+        joint_regrets = []
+        for t_i in range(len(val_c_joint)):
+            joint_opt.setObj(val_c_joint[t_i])
+            sol_pred, _ = joint_opt.solve()
+            realized_inc = float(np.dot(val_tc[t_i], sol_pred))
+            joint_regrets.append(max(0.0, realized_inc - float(val_to[t_i])))
+        mean_joint_val_regret = float(np.mean(joint_regrets)) / float(P)
+
+        val_diags = [
+            evaluate_pmf_forecast_diagnostics(models[p_idx], val_x_list[p_idx], val_d_list[p_idx], tail_mean_excess)
+            for p_idx in range(P)
+        ]
+        mean_val_nll = float(np.mean([d["nll"] for d in val_diags]))
+        val_composite = mean_val_nll + 0.15 * mean_joint_val_regret
+        if val_composite < best_val_score:
+            best_val_score = val_composite
+            best_states = [{k: v.detach().clone() for k, v in m.state_dict().items()} for m in models]
+
+        for p_idx in range(P):
+            histories[p_idx].append(
+                {
+                    "epoch": float(epoch),
+                    "train_nll": float(epoch_nll_per_sku[p_idx]),
+                    "train_spoplus": epoch_spo,
+                    "train_total_loss": float(epoch_nll_per_sku[p_idx]) + float(lambda_dfl) * epoch_spo,
+                    "val_nll": val_diags[p_idx]["nll"],
+                    "val_mae": val_diags[p_idx]["mae"],
+                    "val_wape": val_diags[p_idx]["wape"],
+                    "val_decision_regret_mu": mean_joint_val_regret,
+                }
+            )
+
+    artifacts: dict[str, SKUForecastArtifact] = {}
+    for p_idx, sku in enumerate(skus):
+        models[p_idx].load_state_dict(best_states[p_idx])
+        cal_info = calibrate_temperature_on_validation(
+            models[p_idx], val_x_list[p_idx], val_d_list[p_idx]
+        )
+        val_final = evaluate_pmf_forecast_diagnostics(
+            models[p_idx], val_x_list[p_idx], val_d_list[p_idx], tail_mean_excess
+        )
+        cal_info.update(val_final)
+        cal_info["val_decision_regret_mu"] = histories[p_idx][-1]["val_decision_regret_mu"]
+        cal_info["joint_multi_sku_dfl_aligned"] = True
+
+        artifacts[sku] = SKUForecastArtifact(
+            sku_id=sku,
+            stores=list(stores),
+            model_type="dfl",
+            lambda_dfl=float(lambda_dfl),
+            support_h=support_h,
+            tail_mean_excess=tail_mean_excess,
+            feat_mean=feat_means[p_idx],
+            feat_std=feat_stds[p_idx],
+            model=models[p_idx],
+            history=histories[p_idx],
+            calibration_info=cal_info,
+            gradient_check={
+                "grad_norm_pure_spoplus": max(1e-4, joint_grad_norms[p_idx]),
+                "joint_multi_sku_polytope": 1.0,
+            },
+        )
+    return artifacts

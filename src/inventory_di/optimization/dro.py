@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from scipy.optimize import LinearConstraint, linprog, milp
+from scipy.sparse import csc_matrix
 
 from inventory_di.optimization.core import (
     AllocationInstance,
@@ -213,9 +214,11 @@ def solve_scenario_reweighting_dro_milp(
                 h_val = float(inst.h[s, p_idx]) if inst.h[s, p_idx] > 0 else 1e-7
                 c[v_idx] = one_minus_rw * pj * h_val
 
-    # Build sparse/dense constraint rows
+    # Build sparse CSC constraint matrix (Priority 6: sparse MILP matrices)
     num_rows = P + S + 2 * J * N + (J if rw > 0.0 else 0)
-    A = np.zeros((num_rows, total_vars), dtype=float)
+    row_ind: list[int] = []
+    col_ind: list[int] = []
+    data_val: list[float] = []
     b_l = np.full(num_rows, -np.inf, dtype=float)
     b_u = np.zeros(num_rows, dtype=float)
     r_idx = 0
@@ -223,14 +226,18 @@ def solve_scenario_reweighting_dro_milp(
     # 1. Warehouse supply per SKU: sum_s x_{sp} <= W_p
     for p_idx in range(P):
         for s in range(S):
-            A[r_idx, s * P + p_idx] = 1.0
+            row_ind.append(r_idx)
+            col_ind.append(s * P + p_idx)
+            data_val.append(1.0)
         b_u[r_idx] = float(inst.W[p_idx])
         r_idx += 1
 
     # 2. Store total capacity: sum_p x_{sp} <= C_s - sum_p I_{sp}
     for s in range(S):
         for p_idx in range(P):
-            A[r_idx, s * P + p_idx] = 1.0
+            row_ind.append(r_idx)
+            col_ind.append(s * P + p_idx)
+            data_val.append(1.0)
         b_u[r_idx] = float(inst.C[s] - np.sum(inst.I[s, :]))
         r_idx += 1
 
@@ -244,32 +251,43 @@ def solve_scenario_reweighting_dro_milp(
                 net_d = float(scenarios[j, s, p_idx] - inst.I[s, p_idx])
 
                 # -x_{sp} - u_{jsp} <= -net_d
-                A[r_idx, sp] = -1.0
-                A[r_idx, u_idx] = -1.0
+                row_ind.extend([r_idx, r_idx])
+                col_ind.extend([sp, u_idx])
+                data_val.extend([-1.0, -1.0])
                 b_u[r_idx] = -net_d
                 r_idx += 1
 
                 # x_{sp} - v_{jsp} <= net_d
-                A[r_idx, sp] = 1.0
-                A[r_idx, v_idx] = -1.0
+                row_ind.extend([r_idx, r_idx])
+                col_ind.extend([sp, v_idx])
+                data_val.extend([1.0, -1.0])
                 b_u[r_idx] = net_d
                 r_idx += 1
 
     # 4. CVaR excess constraint: L_j(x) - eta - z_j <= 0
     if rw > 0.0:
         for j in range(J):
-            A[r_idx, idx_eta] = -1.0
-            A[r_idx, idx_z_start + j] = -1.0
+            row_ind.extend([r_idx, r_idx])
+            col_ind.extend([idx_eta, idx_z_start + j])
+            data_val.extend([-1.0, -1.0])
             for s in range(S):
                 for p_idx in range(P):
                     sp = s * P + p_idx
                     u_idx = idx_u_start + j * N + sp
                     v_idx = idx_v_start + j * N + sp
-                    A[r_idx, sp] = float(inst.t[s, p_idx])
-                    A[r_idx, u_idx] = float(inst.b[s, p_idx])
-                    A[r_idx, v_idx] = float(inst.h[s, p_idx])
+                    row_ind.extend([r_idx, r_idx, r_idx])
+                    col_ind.extend([sp, u_idx, v_idx])
+                    data_val.extend(
+                        [
+                            float(inst.t[s, p_idx]),
+                            float(inst.b[s, p_idx]),
+                            float(inst.h[s, p_idx]),
+                        ]
+                    )
             b_u[r_idx] = 0.0
             r_idx += 1
+
+    A = csc_matrix((data_val, (row_ind, col_ind)), shape=(num_rows, total_vars), dtype=float)
 
     res = milp(
         c=c,

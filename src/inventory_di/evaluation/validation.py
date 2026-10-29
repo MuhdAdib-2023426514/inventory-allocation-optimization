@@ -198,10 +198,78 @@ def generate_markdown_report(
                 f"{abl['optimal_temperature']:.2f} |"
             )
 
+    # Priority 2 & 3: Scenario Diagnostics & Validation DRO Parameter Selection
+    val_tuning = run_manifest.get("validation_dro_tuning")
+    if val_tuning:
+        sup_sd = val_tuning.get("supervised_scenario_diagnostics", {})
+        dfl_sd = val_tuning.get("dfl_scenario_diagnostics", {})
+        sup_sel = val_tuning.get("supervised_dro_selected", {})
+        dfl_sel = val_tuning.get("dfl_dro_selected", {})
+        lines.extend(
+            [
+                "",
+                "## 5. Scenario Calibration Diagnostics & Validation DRO Tuning (Priorities 2 & 3)",
+                "",
+                "- **Validation-Split Scenario Calibration (`split == 'val'`):**",
+                f"  - `supervised` copula scenarios: raw mean bias `{sup_sd.get('raw_scenario_mean_bias_units', 0.0):+.2f}` units $\\rightarrow$ calibrated bias `{sup_sd.get('calibrated_scenario_mean_bias_units', 0.0):+.2f}` units; Energy Score `{sup_sd.get('raw_energy_score', 0.0):.2f}` $\\rightarrow$ `{sup_sd.get('calibrated_energy_score', 0.0):.2f}` (mean scale factor `{sup_sd.get('mean_scale_factor', 1.0):.2f}`).",
+                f"  - `dfl` (`JointMultiSKUMarginalAllocationModel`) copula scenarios: raw mean bias `{dfl_sd.get('raw_scenario_mean_bias_units', 0.0):+.2f}` units $\\rightarrow$ calibrated bias `{dfl_sd.get('calibrated_scenario_mean_bias_units', 0.0):+.2f}` units; Energy Score `{dfl_sd.get('raw_energy_score', 0.0):.2f}` $\\rightarrow$ `{dfl_sd.get('calibrated_energy_score', 0.0):.2f}` (mean scale factor `{dfl_sd.get('mean_scale_factor', 1.0):.2f}`).",
+                "- **Validation-Selected DRO Hyperparameters (`split == 'val'`):**",
+                f"  - `supervised_dro`: selected $\\alpha^* = {sup_sel.get('alpha', cfg.dro.alpha):.2f}, \\text{{risk\\_weight}}^* = {sup_sel.get('risk_weight', cfg.dro.risk_weight):.2f}$.",
+                f"  - `dfl_dro`: selected $\\alpha^* = {dfl_sel.get('alpha', cfg.dro.alpha):.2f}, \\text{{risk\\_weight}}^* = {dfl_sel.get('risk_weight', cfg.dro.risk_weight):.2f}$.",
+            ]
+        )
+
+    # Priority 4: Multi-Seed Reliability Table
+    art_dir = Path(cfg.data.artifacts_dir)
+    ms_path = art_dir / "multi_seed_summary.parquet"
+    if ms_path.exists():
+        ms_df = pd.read_parquet(ms_path)
+        agg_ms = (
+            ms_df.groupby("policy", as_index=False)
+            .agg(
+                mean_cost_across_seeds=("mean_cost_mu", "mean"),
+                std_cost_across_seeds=("mean_cost_mu", "std"),
+                mean_fill_across_seeds=("mean_fill_rate", "mean"),
+            )
+        )
+        lines.extend(
+            [
+                "",
+                f"## 6. Multi-Seed Stability Across Seeds `{run_manifest.get('evaluated_seeds', cfg.evaluation.seeds)}` (Priority 4)",
+                "",
+                "| Policy | Mean Cost Across Seeds (MU) | Seed SD (MU) | Mean Fill Rate (%) |",
+                "| :--- | ---: | ---: | ---: |",
+            ]
+        )
+        for r in agg_ms.itertuples(index=False):
+            sd_val = 0.0 if pd.isna(r.std_cost_across_seeds) else float(r.std_cost_across_seeds)
+            lines.append(
+                f"| `{r.policy}` | {r.mean_cost_across_seeds:.2f} | {sd_val:.2f} | {100.0 * r.mean_fill_across_seeds:.1f}% |"
+            )
+
+    # Priority 7: Multi-Period Rolling Inventory Carryover & Lead Time Table
+    co_path = art_dir / "carryover_leadtime_metrics.parquet"
+    if co_path.exists():
+        co_df = pd.read_parquet(co_path)
+        lines.extend(
+            [
+                "",
+                "## 7. Rolling Inventory Carryover & Replenishment Lead-Time Evaluation (Priority 7)",
+                "",
+                "| Lead Time (Weeks) | Policy | Rolling Mean Cost (MU) | Shortage Cost (MU) | Holding Cost (MU) | Fill Rate (%) | Ending Inventory (Units) |",
+                "| :---: | :--- | ---: | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for r in co_df.itertuples(index=False):
+            lines.append(
+                f"| `{r.lead_time_weeks}` | `{r.policy}` | {r.mean_cost_mu:.2f} | {r.mean_shortage_cost_mu:.2f} | "
+                f"{r.mean_holding_cost_mu:.2f} | {100.0 * r.fill_rate:.1f}% | {r.ending_inventory_units} |"
+            )
+
     lines.extend(
         [
             "",
-            "## 5. Methodological Caveats & Limitations",
+            "## 8. Methodological Caveats & Limitations",
             "",
             "1. **Observed Sales != Latent Demand:** Even when run on M5 data, observed unit sales are right-censored by historical stockouts; in `synthetic_demo` mode (`DEMO / SYNTHETIC`), demand is generated from a documented Poisson-Gamma weekly process with shared cross-store shocks.",
             "2. **Synthetic Operating Economics:** Opening stock, warehouse supply caps, store capacities, and unit costs (`MU`) are explicitly synthetic (`data_provenance='synthetic'`).",

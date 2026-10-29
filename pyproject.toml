@@ -21,6 +21,7 @@ dependencies = [
     "duckdb>=1.0.0",
     "pytest>=8.0.0",
     "ruff>=0.4.0",
+    "kagglehub>=1.0.3",
 ]
 
 [project.scripts]

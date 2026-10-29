@@ -69,6 +69,8 @@ class EvaluationConfig(BaseModel):
     bootstrap_resamples: int = Field(default=200, ge=10)
     bootstrap_block_size: int = Field(default=2, ge=1)
     seeds: list[int] = Field(default_factory=lambda: [42, 101, 202])
+    lead_time_weeks: int = Field(default=0, ge=0)
+    carryover_decay: float = Field(default=1.0, ge=0.0, le=1.0)
 
 
 class ExperimentConfig(BaseModel):

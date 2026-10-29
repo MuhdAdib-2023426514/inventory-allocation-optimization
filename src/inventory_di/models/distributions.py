@@ -207,6 +207,8 @@ class EmpiricalCopulaScenarioGenerator:
         self.support_h = int(support_h)
         self.tail_mean_excess = float(max(1.0, tail_mean_excess))
         self.rank_matrix_train: np.ndarray | None = None  # shape (T_train, S, P) in (0, 1)
+        self.val_scale_factors: np.ndarray | None = None  # shape (S, P) fitted on val only
+        self.val_scenario_diagnostics: dict[str, Any] = {}
 
     def fit_on_train(self, train_weekly_df: Any) -> dict[str, Any]:
         """Estimate empirical rank uniforms across (store, SKU) on `split == 'train'` only."""
@@ -282,4 +284,94 @@ class EmpiricalCopulaScenarioGenerator:
                         excess = 1 + int(rng.poisson(max(0.5, self.tail_mean_excess - 1.0)))
                         scenarios[n_idx, s_idx, p_idx] = int(H + excess)
 
+        if self.val_scale_factors is not None:
+            scaled = np.rint(
+                scenarios.astype(float) * self.val_scale_factors.reshape(1, S, P)
+            ).astype(int)
+            scenarios = np.maximum(0, scaled)
+
         return scenarios
+
+    def calibrate_and_diagnose_on_val(
+        self,
+        val_pmfs_by_origin: list[dict[str, np.ndarray]],
+        val_realized_list: list[np.ndarray],
+        num_scenarios: int = 40,
+        seed: int = 777,
+    ) -> dict[str, Any]:
+        """Priority 2: Diagnose and calibrate sampled demand scenarios strictly on `split == 'val'`.
+
+        Computes pre-calibration and post-calibration scenario mean bias, P10-P90 coverage,
+        and Energy Score (multivariate CRPS generalization), and fits a bounded validation
+        multiplicative scale factor per `(store, SKU)` to eliminate systematic diffuse-bin
+        overestimation bias without touching test data.
+        """
+        T_val = len(val_realized_list)
+        if T_val == 0:
+            return {"calibrated_on_split": "val", "status": "no_val_origins"}
+
+        # Reset scale factors before measuring raw scenario draws
+        self.val_scale_factors = None
+        raw_scen_list: list[np.ndarray] = []
+        for t_i in range(T_val):
+            sc = self.sample_scenarios(
+                val_pmfs_by_origin[t_i], num_scenarios=num_scenarios, seed=seed + t_i
+            )
+            raw_scen_list.append(sc)
+
+        val_real_arr = np.stack(val_realized_list, axis=0).astype(float)  # (T_val, S, P)
+        raw_scen_arr = np.stack(raw_scen_list, axis=0).astype(float)  # (T_val, N, S, P)
+
+        raw_mean_per_sp = np.mean(raw_scen_arr, axis=(0, 1))  # (S, P)
+        real_mean_per_sp = np.mean(val_real_arr, axis=0)  # (S, P)
+
+        # Fit bounded multiplicative scale factor in [0.45, 1.25] on validation split only
+        ratio = np.where(
+            raw_mean_per_sp > 0.5,
+            (real_mean_per_sp + 0.5) / (raw_mean_per_sp + 0.5),
+            1.0,
+        )
+        self.val_scale_factors = np.clip(ratio, 0.45, 1.25)
+
+        cal_scen_list: list[np.ndarray] = []
+        for t_i in range(T_val):
+            sc_cal = self.sample_scenarios(
+                val_pmfs_by_origin[t_i], num_scenarios=num_scenarios, seed=seed + t_i
+            )
+            cal_scen_list.append(sc_cal)
+        cal_scen_arr = np.stack(cal_scen_list, axis=0).astype(float)
+
+        def _energy_score(scen_t_n_s_p: np.ndarray, obs_t_s_p: np.ndarray) -> float:
+            N_s = scen_t_n_s_p.shape[1]
+            es_vals: list[float] = []
+            for t_i in range(len(obs_t_s_p)):
+                X = scen_t_n_s_p[t_i].reshape(N_s, -1)
+                y = obs_t_s_p[t_i].reshape(1, -1)
+                term1 = float(np.mean(np.linalg.norm(X - y, axis=1)))
+                # Subsample pairwise distances for O(N) speed
+                X_shift = np.roll(X, shift=1, axis=0)
+                term2 = 0.5 * float(np.mean(np.linalg.norm(X - X_shift, axis=1)))
+                es_vals.append(max(0.0, term1 - term2))
+            return float(np.mean(es_vals))
+
+        raw_bias = float(np.mean(np.mean(raw_scen_arr, axis=1) - val_real_arr))
+        cal_bias = float(np.mean(np.mean(cal_scen_arr, axis=1) - val_real_arr))
+        raw_es = _energy_score(raw_scen_arr, val_real_arr)
+        cal_es = _energy_score(cal_scen_arr, val_real_arr)
+
+        cal_p10 = np.percentile(cal_scen_arr, 10, axis=1)
+        cal_p90 = np.percentile(cal_scen_arr, 90, axis=1)
+        cal_cov80 = float(np.mean((val_real_arr >= cal_p10) & (val_real_arr <= cal_p90)))
+
+        diag = {
+            "calibrated_on_split": "val",
+            "num_val_origins": T_val,
+            "raw_scenario_mean_bias_units": raw_bias,
+            "calibrated_scenario_mean_bias_units": cal_bias,
+            "raw_energy_score": raw_es,
+            "calibrated_energy_score": cal_es,
+            "calibrated_p10_p90_coverage": cal_cov80,
+            "mean_scale_factor": float(np.mean(self.val_scale_factors)),
+        }
+        self.val_scenario_diagnostics = diag
+        return diag
