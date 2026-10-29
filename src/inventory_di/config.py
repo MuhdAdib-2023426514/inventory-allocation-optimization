@@ -17,6 +17,7 @@ class DataConfig(BaseModel):
     train_weeks: int = Field(ge=4)
     val_weeks: int = Field(ge=2)
     test_weeks: int = Field(ge=2)
+    demand_regime: Literal["regular", "intermittent", "mixed"] = "regular"
     raw_m5_dir: str = "data/raw/m5"
     processed_dir: str = "data/demo"
     artifacts_dir: str = "artifacts/demo"
@@ -69,6 +70,7 @@ class EvaluationConfig(BaseModel):
     bootstrap_resamples: int = Field(default=200, ge=10)
     bootstrap_block_size: int = Field(default=2, ge=1)
     seeds: list[int] = Field(default_factory=lambda: [42, 101, 202])
+    independent_training_seeds: bool = True
     lead_time_weeks: int = Field(default=0, ge=0)
     carryover_decay: float = Field(default=1.0, ge=0.0, le=1.0)
 

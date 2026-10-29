@@ -214,3 +214,39 @@ def plot_policy_cost_comparison(summary_df: pd.DataFrame) -> go.Figure:
         margin=dict(l=20, r=20, t=50, b=20),
     )
     return fig
+
+
+def plot_cost_risk_service_tradeoff(frontier_df: pd.DataFrame) -> go.Figure:
+    """Plot Full-Horizon Realized Mean Cost vs Realized CVaR_0.90 and Fill Rate across (alpha, risk_weight) (P1.3)."""
+    df = frontier_df.copy()
+    df["fill_rate_pct"] = 100.0 * df["mean_fill_rate"]
+    df["no_stockout_pct"] = 100.0 * df["service_level_no_stockout_rate"]
+    df["param_label"] = df.apply(lambda r: f"α={r['alpha']:.2f}, rw={r['risk_weight']:.2f}", axis=1)
+    fig = px.scatter(
+        df,
+        x="realized_mean_cost_mu",
+        y="realized_cvar90_cost_mu",
+        color="policy_family",
+        symbol="alpha",
+        size="fill_rate_pct",
+        text="param_label",
+        hover_data=[
+            "alpha",
+            "risk_weight",
+            "fill_rate_pct",
+            "no_stockout_pct",
+            "mean_shortage_cost_mu",
+            "mean_holding_cost_mu",
+        ],
+        title="Full-Horizon Cost–Risk–Service-Level Trade-Off Frontier Across Held-Out Test Origins",
+        labels={
+            "realized_mean_cost_mu": "Realized Mean Out-of-Sample Cost (MU)",
+            "realized_cvar90_cost_mu": "Realized Worst-Tail Cost CVaR_0.90 (MU)",
+            "policy_family": "Policy Family",
+            "fill_rate_pct": "Fill Rate (%)",
+        },
+        template="plotly_white",
+    )
+    fig.update_traces(textposition="top center")
+    fig.update_layout(height=420, margin=dict(l=20, r=20, t=50, b=20))
+    return fig

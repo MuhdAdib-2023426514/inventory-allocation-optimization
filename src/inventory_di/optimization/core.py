@@ -437,3 +437,199 @@ def solve_nominal_marginal_cost_milp(
         violations=viols,
         runtime_seconds=runtime,
     )
+
+
+def solve_multiperiod_carryover_oracle(
+    D_trajectory: np.ndarray,
+    base_inst: AllocationInstance,
+    lead_time: int = 0,
+    initial_pipeline: list[np.ndarray] | None = None,
+) -> dict[str, Any]:
+    """Solve the exact multi-period rolling-horizon clairvoyant oracle MILP (`P1.1`).
+
+    Given realized demand trajectory `D_trajectory` of shape `(T, S, P)` over `T` origins,
+    initial stock `I_0 = base_inst.I`, and replenishment lead time `L = lead_time` weeks:
+      - At week `t = 0..T-1`, order integer `x_{t, s, p} in [0, K_{s, p}]` with `sum_s x_{t, s, p} <= W_p`.
+      - Arriving units at week `t`:
+          `a_{t, s, p} = initial_pipeline[t][s, p]` if `t < L` else `x_{t - L, s, p}`.
+      - Inventory dynamics for `t = 0..T-1`:
+          `I_{t, s, p} + a_{t, s, p} - D_{t, s, p} = v_{t, s, p} - u_{t, s, p}`
+          `I_{t+1, s, p} = v_{t, s, p}` (carried-over excess stock >= 0)
+          `u_{t, s, p} >= 0` (shortage at week `t`)
+      - Store capacity at week `t`:
+          `sum_p (I_{t, s, p} + a_{t, s, p}) <= C_s`.
+
+    Because this MILP optimizes jointly over all `t = 0..T-1` under the exact same initial stock,
+    initial pipeline, and physical constraints as any causal rolling policy, its total cost is
+    guaranteed to be a mathematical lower bound (`Rolling Regret >= 0`).
+    """
+    T, S, P = D_trajectory.shape
+    N = S * P
+    L = int(lead_time)
+    init_pipe = (
+        [np.asarray(arr, dtype=int) for arr in initial_pipeline]
+        if initial_pipeline is not None
+        else [np.zeros((S, P), dtype=int) for _ in range(L)]
+    )
+
+    # Variables per week t = 0..T-1 and (s, p):
+    #   x_{t, s, p} : index t*N + sp          (0 .. T*N - 1)
+    #   u_{t, s, p} : index T*N + t*N + sp    (T*N .. 2*T*N - 1)
+    #   v_{t, s, p} : index 2*T*N + t*N + sp  (2*T*N .. 3*T*N - 1)
+    total_vars = 3 * T * N
+    c = np.zeros(total_vars, dtype=float)
+    integrality = np.zeros(total_vars, dtype=int)
+    lb = np.zeros(total_vars, dtype=float)
+    ub = np.full(total_vars, np.inf, dtype=float)
+
+    for t_i in range(T):
+        for s in range(S):
+            for p in range(P):
+                sp = s * P + p
+                idx_x = t_i * N + sp
+                idx_u = T * N + t_i * N + sp
+                idx_v = 2 * T * N + t_i * N + sp
+
+                # Shipping cost is paid on arrived shipments a_{t, s, p}; for t >= T - L, x_{t} never arrives within 0..T-1
+                if t_i + L < T:
+                    c[idx_x] = float(base_inst.t[s, p])
+                else:
+                    c[idx_x] = 0.0
+                    ub[idx_x] = 0.0  # No need to order after T - 1 - L
+                c[idx_u] = float(base_inst.b[s, p])
+                c[idx_v] = float(base_inst.h[s, p]) if base_inst.h[s, p] > 0 else 1e-7
+                integrality[idx_x] = 1
+                integrality[idx_v] = 1
+                if t_i + L < T:
+                    ub[idx_x] = float(base_inst.K[s, p])
+
+    row_ind: list[int] = []
+    col_ind: list[int] = []
+    data_val: list[float] = []
+    b_l_list: list[float] = []
+    b_u_list: list[float] = []
+    r_idx = 0
+
+    # 1. Exact inventory balance for each t, s, p:
+    #    v_{t,s,p} - u_{t,s,p} - I_{t,s,p} - a_{t,s,p} == -D_{t,s,p}
+    for t_i in range(T):
+        for s in range(S):
+            for p in range(P):
+                sp = s * P + p
+                idx_u = T * N + t_i * N + sp
+                idx_v = 2 * T * N + t_i * N + sp
+
+                row_ind.extend([r_idx, r_idx])
+                col_ind.extend([idx_v, idx_u])
+                data_val.extend([1.0, -1.0])
+
+                rhs = -float(D_trajectory[t_i, s, p])
+                if t_i == 0:
+                    rhs += float(base_inst.I[s, p])
+                else:
+                    idx_v_prev = 2 * T * N + (t_i - 1) * N + sp
+                    row_ind.append(r_idx)
+                    col_ind.append(idx_v_prev)
+                    data_val.append(-1.0)
+
+                if t_i < L:
+                    rhs += float(init_pipe[t_i][s, p])
+                else:
+                    idx_x_arr = (t_i - L) * N + sp
+                    row_ind.append(r_idx)
+                    col_ind.append(idx_x_arr)
+                    data_val.append(-1.0)
+
+                b_l_list.append(rhs)
+                b_u_list.append(rhs)
+                r_idx += 1
+
+    # 2. Per-SKU warehouse supply at each week t: sum_s x_{t, s, p} <= W_p
+    for t_i in range(T):
+        for p in range(P):
+            for s in range(S):
+                row_ind.append(r_idx)
+                col_ind.append(t_i * N + s * P + p)
+                data_val.append(1.0)
+            b_l_list.append(-np.inf)
+            b_u_list.append(float(base_inst.W[p]))
+            r_idx += 1
+
+    # 3. Store total capacity at each week t: sum_p (I_{t, s, p} + a_{t, s, p}) <= C_s
+    for t_i in range(T):
+        for s in range(S):
+            rhs_cap = float(base_inst.C[s])
+            for p in range(P):
+                sp = s * P + p
+                if t_i == 0:
+                    rhs_cap -= float(base_inst.I[s, p])
+                else:
+                    idx_v_prev = 2 * T * N + (t_i - 1) * N + sp
+                    row_ind.append(r_idx)
+                    col_ind.append(idx_v_prev)
+                    data_val.append(1.0)
+
+                if t_i < L:
+                    rhs_cap -= float(init_pipe[t_i][s, p])
+                else:
+                    idx_x_arr = (t_i - L) * N + sp
+                    row_ind.append(r_idx)
+                    col_ind.append(idx_x_arr)
+                    data_val.append(1.0)
+
+            b_l_list.append(-np.inf)
+            b_u_list.append(rhs_cap)
+            r_idx += 1
+
+    A = csc_matrix((data_val, (row_ind, col_ind)), shape=(r_idx, total_vars), dtype=float)
+    res = milp(
+        c=c,
+        integrality=integrality,
+        bounds=(lb, ub),
+        constraints=LinearConstraint(A, np.array(b_l_list, dtype=float), np.array(b_u_list, dtype=float)),
+    )
+
+    x_orders = np.zeros((T, S, P), dtype=int)
+    if res.success and res.x is not None:
+        x_orders = np.rint(res.x[: T * N]).astype(int).reshape(T, S, P)
+
+    # Independently simulate exact trajectory cost with x_orders
+    I_curr = base_inst.I.copy()
+    tot_cost = 0.0
+    tot_shortage = 0.0
+    tot_holding = 0.0
+    tot_filled = 0
+    tot_demand = 0
+
+    for t_i in range(T):
+        x_arr = init_pipe[t_i] if t_i < L else x_orders[t_i - L]
+        inst_t = AllocationInstance(
+            stores=base_inst.stores,
+            skus=base_inst.skus,
+            I=I_curr.copy(),
+            W=base_inst.W,
+            K=base_inst.K,
+            C=base_inst.C,
+            b=base_inst.b,
+            h=base_inst.h,
+            t=base_inst.t,
+        )
+        cb = evaluate_exact_cost(x_arr, D_trajectory[t_i], inst_t)
+        tot_cost += cb.total_cost_mu
+        tot_shortage += cb.shortage_cost_mu
+        tot_holding += cb.holding_cost_mu
+        tot_filled += cb.filled_units
+        tot_demand += int(np.sum(D_trajectory[t_i]))
+        I_curr = np.maximum(0, I_curr + x_arr - D_trajectory[t_i])
+
+    n_orig = max(1, T)
+    return {
+        "x_orders": x_orders,
+        "total_cost_mu": tot_cost,
+        "mean_cost_mu": tot_cost / n_orig,
+        "mean_shortage_cost_mu": tot_shortage / n_orig,
+        "mean_holding_cost_mu": tot_holding / n_orig,
+        "fill_rate": float(tot_filled / max(1, tot_demand)),
+        "ending_inventory_units": int(np.sum(I_curr)),
+        "solver_status": "optimal" if res.success else f"failed ({res.message})",
+    }

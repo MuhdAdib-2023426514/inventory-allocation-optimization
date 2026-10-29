@@ -55,18 +55,25 @@ Verify the environment, HiGHS solver, mandatory 2-store toy mathematical oracle,
 
 *(Add `--quick` to `train` or `backtest` for a fast smoke budget.)*
 
-### B. Walmart M5 Mode (`data_mode="m5_sales_proxy"`)
+### B. Walmart M5 Modes (`data_mode="m5_sales_proxy"` — Regular & Intermittent Regimes)
 
 Per `AGENTS.md` §1.10 & §4, raw M5 competition files are not committed to Git. To run M5 mode:
 1. Accept competition rules and download the dataset from [Kaggle M5 Forecasting — Accuracy](https://www.kaggle.com/competitions/m5-forecasting-accuracy/data).
 2. Place `calendar.csv`, `sell_prices.csv`, and `sales_train_evaluation.csv` (or `sales_train_validation.csv`) into `data/raw/m5/`.
-3. Execute the exact same pipeline with `configs/m5.yaml`:
+3. Execute the pipeline for the **Regular-Selling Cohort (`configs/m5.yaml`, `demand_regime="regular"`, `ADI <= 1.25`)** and/or the **Intermittent/Lumpy Cohort (`configs/m5_intermittent.yaml`, `demand_regime="intermittent"`, `ADI >= 1.35`)**:
 
 ```bash
+# Regular-selling M5 HOUSEHOLD SKUs (5 stores x 10 SKUs)
 .venv/bin/python -m inventory_di.cli prepare --config configs/m5.yaml
 .venv/bin/python -m inventory_di.cli train --config configs/m5.yaml --model all
 .venv/bin/python -m inventory_di.cli backtest --config configs/m5.yaml
 .venv/bin/python -m inventory_di.cli report --config configs/m5.yaml
+
+# Intermittent/lumpy M5 HOUSEHOLD SKUs (5 stores x 10 SKUs)
+.venv/bin/python -m inventory_di.cli prepare --config configs/m5_intermittent.yaml
+.venv/bin/python -m inventory_di.cli train --config configs/m5_intermittent.yaml --model all
+.venv/bin/python -m inventory_di.cli backtest --config configs/m5_intermittent.yaml
+.venv/bin/python -m inventory_di.cli report --config configs/m5_intermittent.yaml
 ```
 
 ### C. Launch the Offline Streamlit Decision-Experiment Dashboard

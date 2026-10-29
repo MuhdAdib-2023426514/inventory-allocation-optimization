@@ -24,6 +24,7 @@ from inventory_di.optimization.baselines import solve_clairvoyant_oracle
 from inventory_di.optimization.core import evaluate_exact_cost
 from inventory_di.optimization.dro import solve_scenario_reweighting_dro_milp
 from inventory_di.visualization.plots import (
+    plot_cost_risk_service_tradeoff,
     plot_forecast_quantiles,
     plot_historical_demand_by_split,
     plot_policy_cost_comparison,
@@ -89,6 +90,11 @@ def load_cached_bundle(config_path: str) -> dict[str, Any]:
         "carryover_leadtime": (
             pd.read_parquet(art_dir / "carryover_leadtime_metrics.parquet")
             if (art_dir / "carryover_leadtime_metrics.parquet").exists()
+            else None
+        ),
+        "cost_risk_service_frontier": (
+            pd.read_parquet(art_dir / "cost_risk_service_frontier.parquet")
+            if (art_dir / "cost_risk_service_frontier.parquet").exists()
             else None
         ),
     }
@@ -440,6 +446,22 @@ def render_page_d(bundle: dict[str, Any]) -> None:
             mime="text/csv",
         )
 
+    val_tuning = bundle.get("run_manifest", {}).get("validation_dro_tuning", {})
+    if val_tuning:
+        sup_sel = val_tuning.get("supervised_dro_selected", {})
+        dfl_sel = val_tuning.get("dfl_dro_selected", {})
+        st.info(
+            f"**Validation-Selected DRO Hyperparameters (`split='val'`):** "
+            f"`supervised_dro` $\\rightarrow (\\alpha^*={sup_sel.get('alpha', 0.90):.2f}, \\text{{risk\\_weight}}^*={sup_sel.get('risk_weight', 0.50):.2f})$ | "
+            f"`dfl_dro` $\\rightarrow (\\alpha^*={dfl_sel.get('alpha', 0.90):.2f}, \\text{{risk\\_weight}}^*={dfl_sel.get('risk_weight', 0.50):.2f})$."
+        )
+
+    if bundle.get("cost_risk_service_frontier") is not None:
+        st.subheader("Full-Horizon Cost–Risk–Service-Level Trade-Off Frontier Across Held-Out Test Origins")
+        fr_df: pd.DataFrame = bundle["cost_risk_service_frontier"]
+        st.plotly_chart(plot_cost_risk_service_tradeoff(fr_df), use_container_width=True)
+        st.dataframe(fr_df, use_container_width=True)
+
     st.plotly_chart(
         plot_risk_cost_pareto(sens_df, supply_multiplier=float(sel_supply_mult)),
         use_container_width=True,
@@ -494,7 +516,7 @@ def render_page_e(bundle: dict[str, Any]) -> None:
     st.dataframe(piv, use_container_width=True)
 
     if bundle.get("multi_seed_summary") is not None:
-        st.subheader("Multi-Seed Reliability Across Seeds (`[42, 101, 202]`)")
+        st.subheader("Independent Training-Seed & Scenario-Seed Reliability (`[42, 101, 202]`)")
         ms_df: pd.DataFrame = bundle["multi_seed_summary"]
         st.dataframe(ms_df, use_container_width=True)
 
@@ -502,6 +524,15 @@ def render_page_e(bundle: dict[str, Any]) -> None:
         st.subheader("Rolling Inventory Carryover & Lead-Time (`L=0` vs `L=1` Week) Evaluation")
         co_df: pd.DataFrame = bundle["carryover_leadtime"]
         st.dataframe(co_df, use_container_width=True)
+
+    reg_p = Path("artifacts/m5/summary_metrics.parquet")
+    int_p = Path("artifacts/m5_intermittent/summary_metrics.parquet")
+    if reg_p.exists() and int_p.exists():
+        st.subheader("Demand Regime Generalization: Regular vs. Intermittent M5 SKUs")
+        reg_s = pd.read_parquet(reg_p)[["policy", "mean_cost_mu", "realized_cvar90_cost_mu", "mean_fill_rate"]]
+        int_s = pd.read_parquet(int_p)[["policy", "mean_cost_mu", "realized_cvar90_cost_mu", "mean_fill_rate"]]
+        merged_regime = reg_s.merge(int_s, on="policy", suffixes=("_regular", "_intermittent"))
+        st.dataframe(merged_regime, use_container_width=True)
 
     with st.expander("Run Reproducibility Manifest, Validation DRO Tuning & Checksums"):
         st.json(manifest)
@@ -517,10 +548,19 @@ def main() -> None:
     st.sidebar.title("Inventory Decision Intelligence")
     mode_label = st.sidebar.radio(
         "Dataset / Experiment Mode",
-        options=["Demo Mode (DEMO / SYNTHETIC)", "M5 Mode (M5 Sales Proxy)"],
+        options=[
+            "Demo Mode (DEMO / SYNTHETIC)",
+            "M5 Mode (M5 Sales Proxy)",
+            "M5 Intermittent Mode (Lumpy/Intermittent SKUs)",
+        ],
         index=0,
     )
-    config_path = "configs/demo.yaml" if "Demo" in mode_label else "configs/m5.yaml"
+    if "Demo" in mode_label:
+        config_path = "configs/demo.yaml"
+    elif "Intermittent" in mode_label:
+        config_path = "configs/m5_intermittent.yaml"
+    else:
+        config_path = "configs/m5.yaml"
 
     page = st.sidebar.radio("Navigation (Pages A–E)", options=REGISTERED_PAGES, index=0)
 

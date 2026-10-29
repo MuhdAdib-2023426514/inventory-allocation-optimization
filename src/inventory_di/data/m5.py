@@ -109,23 +109,56 @@ def ingest_m5_dataset(
     chosen_stores = sorted(store_scores.head(cfg.data.num_stores).index.tolist())
     hh_stores = hh_df[hh_df["store_id"].isin(chosen_stores)].copy()
 
-    # Select SKUs that have regular sales across chosen stores and moderate weekly volume (0.3 to 2.0 daily mean)
+    # Select SKUs deterministically on `train_d_cols` according to `cfg.data.demand_regime` (P2.1)
     sku_stats = hh_stores.groupby("item_id").agg(
         mean_daily=("_train_mean_daily", "mean"),
         nonzero_rate=("_train_nonzero_rate", "mean"),
         store_count=("store_id", "nunique"),
     )
-    eligible_skus = sku_stats[
-        (sku_stats["store_count"] == len(chosen_stores))
-        & (sku_stats["mean_daily"] >= 0.25)
-        & (sku_stats["mean_daily"] <= 2.2)
+    sku_stats["adi"] = 1.0 / sku_stats["nonzero_rate"].clip(lower=1e-4)
+
+    regime_mode = getattr(cfg.data, "demand_regime", "regular")
+    full_coverage = sku_stats[sku_stats["store_count"] == len(chosen_stores)].copy()
+
+    reg_pool = full_coverage[
+        (full_coverage["mean_daily"] >= 0.25)
+        & (full_coverage["mean_daily"] <= 2.2)
+        & (full_coverage["nonzero_rate"] >= 0.35)
     ].sort_values(by=["nonzero_rate", "mean_daily"], ascending=[False, True])
 
-    if len(eligible_skus) < cfg.data.num_skus:
-        eligible_skus = sku_stats[sku_stats["store_count"] == len(chosen_stores)].sort_values(
+    int_pool = full_coverage[
+        (full_coverage["mean_daily"] >= 0.08)
+        & (full_coverage["mean_daily"] <= 0.65)
+        & (full_coverage["nonzero_rate"] >= 0.08)
+        & (full_coverage["nonzero_rate"] <= 0.28)
+    ].sort_values(by=["adi", "mean_daily"], ascending=[False, False])
+
+    if regime_mode == "intermittent":
+        eligible_skus = int_pool if len(int_pool) >= cfg.data.num_skus else full_coverage.sort_values(
+            by="nonzero_rate", ascending=True
+        )
+        chosen_skus = sorted(eligible_skus.head(cfg.data.num_skus).index.tolist())
+    elif regime_mode == "mixed":
+        n_reg = cfg.data.num_skus // 2
+        n_int = cfg.data.num_skus - n_reg
+        chosen_skus = sorted(
+            reg_pool.head(n_reg).index.tolist() + int_pool.head(n_int).index.tolist()
+        )
+    else:
+        eligible_skus = reg_pool if len(reg_pool) >= cfg.data.num_skus else full_coverage.sort_values(
             by="nonzero_rate", ascending=False
         )
-    chosen_skus = sorted(eligible_skus.head(cfg.data.num_skus).index.tolist())
+        chosen_skus = sorted(eligible_skus.head(cfg.data.num_skus).index.tolist())
+
+    sku_regime_metadata = {
+        str(sku): {
+            "regime": "intermittent" if float(sku_stats.loc[sku, "adi"]) >= 3.0 else "regular",
+            "train_mean_daily": round(float(sku_stats.loc[sku, "mean_daily"]), 4),
+            "train_nonzero_rate": round(float(sku_stats.loc[sku, "nonzero_rate"]), 4),
+            "train_adi": round(float(sku_stats.loc[sku, "adi"]), 3),
+        }
+        for sku in chosen_skus
+    }
 
     cohort_df = hh_stores[hh_stores["item_id"].isin(chosen_skus)].copy()
     melted = cohort_df.melt(
@@ -216,6 +249,8 @@ def ingest_m5_dataset(
         "num_skus": len(chosen_skus),
         "chosen_stores": chosen_stores,
         "chosen_skus": chosen_skus,
+        "demand_regime": getattr(cfg.data, "demand_regime", "regular"),
+        "sku_regime_metadata": sku_regime_metadata,
         "cohort_selection_split": "train",
         "cap_and_support_split": "train",
         "calibration_split": "val",

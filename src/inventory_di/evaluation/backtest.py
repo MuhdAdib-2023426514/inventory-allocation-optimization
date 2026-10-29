@@ -37,6 +37,7 @@ from inventory_di.optimization.baselines import (
 from inventory_di.optimization.core import (
     AllocationInstance,
     evaluate_exact_cost,
+    solve_multiperiod_carryover_oracle,
     solve_nominal_marginal_cost_milp,
 )
 from inventory_di.optimization.dro import (
@@ -443,23 +444,30 @@ def run_multi_seed_and_carryover_experiments(
     copula_dfl: EmpiricalCopulaScenarioGenerator,
     sup_dro_params: dict[str, float],
     dfl_dro_params: dict[str, float],
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Priorities 4 & 7:
-    - Priority 4: Evaluate all 7 policies across multiple scenario/evaluation seeds `cfg.evaluation.seeds`
-      to establish seed stability (mean +/- SD across seeds).
-    - Priority 7: Evaluate multi-period rolling inventory carryover (`I_{s,p,t+1} = max(I_{s,p,t} + x_{s,p,t-L} - D_{s,p,t}, 0)`)
-      and replenishment lead times `L in {0, 1}` weeks across test origins.
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Execute P1.1, P1.2 & P1.3:
+    - P1.2: Independent training-seed + scenario-seed experiments across `cfg.evaluation.seeds`
+      (training independent `supervised` and `dfl` neural networks per seed).
+    - P1.1: Corrected multi-period rolling inventory carryover simulator (`L in {0, 1}`) with
+      exact multi-period rolling-horizon `clairvoyant_oracle` MILP (`Rolling Regret >= 0`) and
+      projected arrival-week opening stock for `L=1`.
+    - P1.3: Full-test-horizon Cost–Risk–Service-Level trade-off frontier across `(alpha, risk_weight)`.
     """
+    from inventory_di.optimization.dro import exact_ambiguity_set_worst_case_loss
+
     base_inst = build_allocation_instance_from_config_df(inv_df)
     S, P = len(base_inst.stores), len(base_inst.skus)
     store_idx = {s: i for i, s in enumerate(base_inst.stores)}
     sku_idx = {p: i for i, p in enumerate(base_inst.skus)}
     test_origins = sorted(weekly_df[weekly_df["split"] == "test"]["forecast_origin"].unique())
     all_origins_sorted = sorted(weekly_df["forecast_origin"].unique())
+    first_art = next(iter(sup_artifacts.values()))
+    support_h = int(first_art.support_h)
+    tail_excess = float(first_art.tail_mean_excess)
 
-    # Pre-extract per-origin realized demand, trailing signals, and predicted PMFs/marginal costs
+    # Pre-extract per-origin realized demand, trailing signals, and primary-seed PMFs/marginal costs
     origin_inputs: list[dict[str, Any]] = []
-    for origin in test_origins:
+    for o_idx, origin in enumerate(test_origins):
         origin_df = weekly_df[weekly_df["forecast_origin"] == origin].copy()
         D_realized = np.zeros((S, P), dtype=int)
         for row in origin_df.itertuples(index=False):
@@ -477,8 +485,10 @@ def run_multi_seed_and_carryover_experiments(
             )
         sup_pmfs: dict[str, np.ndarray] = {}
         sup_mc: dict[str, np.ndarray] = {}
+        sup_exp = np.zeros((S, P), dtype=float)
         dfl_pmfs: dict[str, np.ndarray] = {}
         dfl_mc: dict[str, np.ndarray] = {}
+        dfl_exp = np.zeros((S, P), dtype=float)
         for p_i, sku in enumerate(base_inst.skus):
             s_out = predict_sku_origin_outputs(
                 sup_artifacts[sku],
@@ -491,6 +501,7 @@ def run_multi_seed_and_carryover_experiments(
             )
             sup_pmfs[sku] = s_out["pmf"]
             sup_mc[sku] = s_out["c_hat_flat"]
+            sup_exp[:, p_i] = s_out["expected_demand"]
             d_out = predict_sku_origin_outputs(
                 dfl_artifacts[sku],
                 origin_df,
@@ -502,44 +513,124 @@ def run_multi_seed_and_carryover_experiments(
             )
             dfl_pmfs[sku] = d_out["pmf"]
             dfl_mc[sku] = d_out["c_hat_flat"]
+            dfl_exp[:, p_i] = d_out["expected_demand"]
         origin_inputs.append(
             {
                 "origin": origin,
+                "origin_df": origin_df,
                 "D_realized": D_realized,
                 "trailing_signals": trailing_signals,
                 "sup_pmfs": sup_pmfs,
                 "sup_mc": sup_mc,
+                "sup_exp": sup_exp,
                 "dfl_pmfs": dfl_pmfs,
                 "dfl_mc": dfl_mc,
+                "dfl_exp": dfl_exp,
+                "sup_scen": copula_sup.sample_scenarios(
+                    sup_pmfs, num_scenarios=cfg.dro.num_scenarios, seed=cfg.global_seed + 1000 + o_idx
+                ),
+                "dfl_scen": copula_dfl.sample_scenarios(
+                    dfl_pmfs, num_scenarios=cfg.dro.num_scenarios, seed=cfg.global_seed + 1000 + o_idx
+                ),
             }
         )
 
-    # Priority 4: Multi-seed reliability across `cfg.evaluation.seeds`
+    # P1.2: Independent training-seed + scenario-seed experiments across `cfg.evaluation.seeds`
     seed_rows: list[dict[str, Any]] = []
+    train_epochs_seed = max(10, int(round(cfg.model.epochs * 0.6)))
     for eval_seed in cfg.evaluation.seeds:
+        seed_int = int(eval_seed)
+        if seed_int == int(cfg.global_seed) or not getattr(cfg.evaluation, "independent_training_seeds", True):
+            seed_sup_arts = sup_artifacts
+            seed_dfl_arts = dfl_artifacts
+        else:
+            seed_sup_arts = {}
+            for p_idx, sku in enumerate(base_inst.skus):
+                seed_sup_arts[sku] = train_supervised_sku_model(
+                    weekly_df=weekly_df,
+                    sku_id=sku,
+                    stores=base_inst.stores,
+                    support_h=support_h,
+                    tail_mean_excess=tail_excess,
+                    hidden_dim=cfg.model.hidden_dim,
+                    learning_rate=cfg.model.learning_rate,
+                    epochs=train_epochs_seed,
+                    seed=seed_int + 100 * p_idx,
+                )
+            seed_dfl_arts = train_joint_multi_sku_dfl_models(
+                weekly_df=weekly_df,
+                skus=base_inst.skus,
+                stores=base_inst.stores,
+                I_sp=base_inst.I,
+                K_sp=base_inst.K,
+                W_p=base_inst.W,
+                C_s=base_inst.C,
+                b_sp=base_inst.b,
+                h_sp=base_inst.h,
+                t_sp=base_inst.t,
+                support_h=support_h,
+                tail_mean_excess=tail_excess,
+                hidden_dim=cfg.model.hidden_dim,
+                learning_rate=cfg.model.learning_rate,
+                epochs=train_epochs_seed,
+                batch_size=cfg.model.batch_size,
+                lambda_dfl=cfg.model.lambda_dfl,
+                spoplus_processes=cfg.model.spoplus_processes,
+                seed=seed_int,
+            )
+
         pol_costs: dict[str, list[float]] = {p: [] for p in REQUIRED_POLICIES}
         pol_fills: dict[str, list[float]] = {p: [] for p in REQUIRED_POLICIES}
         for o_idx, inp in enumerate(origin_inputs):
             D_real = inp["D_realized"]
+            origin_df = inp["origin_df"]
+            s_pmfs_seed: dict[str, np.ndarray] = {}
+            s_mc_seed: dict[str, np.ndarray] = {}
+            d_pmfs_seed: dict[str, np.ndarray] = {}
+            d_mc_seed: dict[str, np.ndarray] = {}
+            for p_i, sku in enumerate(base_inst.skus):
+                so = predict_sku_origin_outputs(
+                    seed_sup_arts[sku],
+                    origin_df,
+                    I_s=base_inst.I[:, p_i],
+                    K_s=base_inst.K[:, p_i],
+                    b_s=base_inst.b[:, p_i],
+                    h_s=base_inst.h[:, p_i],
+                    t_s=base_inst.t[:, p_i],
+                )
+                s_pmfs_seed[sku] = so["pmf"]
+                s_mc_seed[sku] = so["c_hat_flat"]
+                do = predict_sku_origin_outputs(
+                    seed_dfl_arts[sku],
+                    origin_df,
+                    I_s=base_inst.I[:, p_i],
+                    K_s=base_inst.K[:, p_i],
+                    b_s=base_inst.b[:, p_i],
+                    h_s=base_inst.h[:, p_i],
+                    t_s=base_inst.t[:, p_i],
+                )
+                d_pmfs_seed[sku] = do["pmf"]
+                d_mc_seed[sku] = do["c_hat_flat"]
+
             s_scen = copula_sup.sample_scenarios(
-                inp["sup_pmfs"], num_scenarios=cfg.dro.num_scenarios, seed=int(eval_seed) + 1000 + o_idx
+                s_pmfs_seed, num_scenarios=cfg.dro.num_scenarios, seed=seed_int + 1000 + o_idx
             )
             d_scen = copula_dfl.sample_scenarios(
-                inp["dfl_pmfs"], num_scenarios=cfg.dro.num_scenarios, seed=int(eval_seed) + 1000 + o_idx
+                d_pmfs_seed, num_scenarios=cfg.dro.num_scenarios, seed=seed_int + 1000 + o_idx
             )
             sols = {
                 "equal_allocation": allocate_equal_shares(base_inst).x,
                 "proportional_allocation": allocate_proportional_shares(
                     inp["trailing_signals"], base_inst
                 ).x,
-                "supervised_pto": solve_nominal_marginal_cost_milp(inp["sup_mc"], base_inst).x,
+                "supervised_pto": solve_nominal_marginal_cost_milp(s_mc_seed, base_inst).x,
                 "supervised_dro": solve_scenario_reweighting_dro_milp(
                     s_scen,
                     base_inst,
                     alpha=float(sup_dro_params["alpha"]),
                     risk_weight=float(sup_dro_params["risk_weight"]),
                 ).x,
-                "dfl_pto": solve_nominal_marginal_cost_milp(inp["dfl_mc"], base_inst).x,
+                "dfl_pto": solve_nominal_marginal_cost_milp(d_mc_seed, base_inst).x,
                 "dfl_dro": solve_scenario_reweighting_dro_milp(
                     d_scen,
                     base_inst,
@@ -552,12 +643,15 @@ def run_multi_seed_and_carryover_experiments(
                 cb = evaluate_exact_cost(x_mat, D_real, base_inst)
                 pol_costs[pol_name].append(cb.total_cost_mu)
                 pol_fills[pol_name].append(cb.fill_rate)
+        oracle_seed_mean = float(np.mean(pol_costs["clairvoyant_oracle"]))
         for pol_name in REQUIRED_POLICIES:
             seed_rows.append(
                 {
-                    "seed": int(eval_seed),
+                    "seed": seed_int,
+                    "training_seed_independent": True,
                     "policy": pol_name,
                     "mean_cost_mu": float(np.mean(pol_costs[pol_name])),
+                    "mean_regret_mu": float(np.mean(pol_costs[pol_name]) - oracle_seed_mean),
                     "std_origin_cost_mu": float(np.std(pol_costs[pol_name], ddof=0)),
                     "mean_fill_rate": float(np.mean(pol_fills[pol_name])),
                     "data_mode": cfg.data_mode,
@@ -565,14 +659,41 @@ def run_multi_seed_and_carryover_experiments(
             )
     multi_seed_df = pd.DataFrame(seed_rows)
 
-    # Priority 7: Multi-period rolling inventory carryover and replenishment lead times L in {0, 1}
+    # P1.1: Corrected multi-period rolling inventory carryover and replenishment lead times L in {0, 1}
+    D_traj = np.stack([inp["D_realized"] for inp in origin_inputs], axis=0)  # (T, S, P)
+    # Common initial pipeline for L=1 (pre-test baseline order in transit at t=0)
+    init_in_transit = allocate_proportional_shares(origin_inputs[0]["trailing_signals"], base_inst).x
     carryover_rows: list[dict[str, Any]] = []
+
     for lead_time in [0, 1]:
+        init_pipe = [init_in_transit.copy() for _ in range(lead_time)]
+        oracle_mp = solve_multiperiod_carryover_oracle(
+            D_trajectory=D_traj,
+            base_inst=base_inst,
+            lead_time=lead_time,
+            initial_pipeline=init_pipe,
+        )
+        oracle_mp_cost = float(oracle_mp["mean_cost_mu"])
+
         for pol_name in REQUIRED_POLICIES:
+            if pol_name == "clairvoyant_oracle":
+                carryover_rows.append(
+                    {
+                        "lead_time_weeks": int(lead_time),
+                        "policy": "clairvoyant_oracle",
+                        "mean_cost_mu": oracle_mp_cost,
+                        "rolling_oracle_regret_mu": 0.0,
+                        "mean_shortage_cost_mu": float(oracle_mp["mean_shortage_cost_mu"]),
+                        "mean_holding_cost_mu": float(oracle_mp["mean_holding_cost_mu"]),
+                        "fill_rate": float(oracle_mp["fill_rate"]),
+                        "ending_inventory_units": int(oracle_mp["ending_inventory_units"]),
+                        "data_mode": cfg.data_mode,
+                    }
+                )
+                continue
+
             I_curr = base_inst.I.copy()
-            pipeline_queue: list[np.ndarray] = [
-                np.zeros((S, P), dtype=int) for _ in range(lead_time)
-            ]
+            pipeline_queue: list[np.ndarray] = [arr.copy() for arr in init_pipe]
             tot_cost = 0.0
             tot_shortage = 0.0
             tot_holding = 0.0
@@ -580,10 +701,111 @@ def run_multi_seed_and_carryover_experiments(
             tot_demand = 0
 
             for o_idx, inp in enumerate(origin_inputs):
-                origin_df = weekly_df[weekly_df["forecast_origin"] == inp["origin"]].copy()
                 D_real = inp["D_realized"]
-                # Construct dynamic instance with carried-over opening stock I_curr
-                inst_t = AllocationInstance(
+                # 1. If lead_time > 0, receive shipment ordered `lead_time` weeks ago first
+                if lead_time > 0:
+                    x_arrived = pipeline_queue.pop(0)
+                    rem_c_arr = np.maximum(0, base_inst.C - np.sum(I_curr, axis=1))
+                    for s_i in range(S):
+                        if np.sum(x_arrived[s_i, :]) > rem_c_arr[s_i]:
+                            scale = float(rem_c_arr[s_i]) / max(1.0, float(np.sum(x_arrived[s_i, :])))
+                            x_arrived[s_i, :] = np.floor(x_arrived[s_i, :] * scale).astype(int)
+                else:
+                    x_arrived = np.zeros((S, P), dtype=int)
+
+                # 2. Project opening stock at the week when the new order `x_order` will arrive (`t + lead_time`)
+                if lead_time == 0:
+                    I_target_week = I_curr.copy()
+                    target_idx = o_idx
+                else:
+                    exp_d_t = (
+                        inp["dfl_exp"]
+                        if pol_name in {"dfl_pto", "dfl_dro"}
+                        else (
+                            inp["sup_exp"]
+                            if pol_name in {"supervised_pto", "supervised_dro"}
+                            else inp["trailing_signals"]
+                        )
+                    )
+                    I_target_week = np.maximum(
+                        0, np.rint(I_curr + x_arrived - exp_d_t).astype(int)
+                    )
+                    for s_i in range(S):
+                        if np.sum(I_target_week[s_i, :]) > base_inst.C[s_i]:
+                            scale = float(base_inst.C[s_i]) / float(np.sum(I_target_week[s_i, :]))
+                            I_target_week[s_i, :] = np.floor(I_target_week[s_i, :] * scale).astype(int)
+                    target_idx = min(len(origin_inputs) - 1, o_idx + lead_time)
+
+                target_inp = origin_inputs[target_idx]
+                target_df = target_inp["origin_df"]
+                inst_order = AllocationInstance(
+                    stores=base_inst.stores,
+                    skus=base_inst.skus,
+                    I=I_target_week.copy(),
+                    W=base_inst.W,
+                    K=base_inst.K,
+                    C=base_inst.C,
+                    b=base_inst.b,
+                    h=base_inst.h,
+                    t=base_inst.t,
+                )
+
+                # No need to order on the final week when lead_time == 1 (arrives after horizon ends)
+                if o_idx + lead_time >= len(origin_inputs):
+                    x_order = np.zeros((S, P), dtype=int)
+                elif pol_name == "equal_allocation":
+                    x_order = allocate_equal_shares(inst_order).x
+                elif pol_name == "proportional_allocation":
+                    x_order = allocate_proportional_shares(inp["trailing_signals"], inst_order).x
+                elif pol_name == "supervised_pto":
+                    mc_t = {
+                        sku: predict_sku_origin_outputs(
+                            sup_artifacts[sku],
+                            target_df,
+                            I_s=I_target_week[:, p_i],
+                            K_s=inst_order.K[:, p_i],
+                            b_s=inst_order.b[:, p_i],
+                            h_s=inst_order.h[:, p_i],
+                            t_s=inst_order.t[:, p_i],
+                        )["c_hat_flat"]
+                        for p_i, sku in enumerate(inst_order.skus)
+                    }
+                    x_order = solve_nominal_marginal_cost_milp(mc_t, inst_order).x
+                elif pol_name == "dfl_pto":
+                    mc_t = {
+                        sku: predict_sku_origin_outputs(
+                            dfl_artifacts[sku],
+                            target_df,
+                            I_s=I_target_week[:, p_i],
+                            K_s=inst_order.K[:, p_i],
+                            b_s=inst_order.b[:, p_i],
+                            h_s=inst_order.h[:, p_i],
+                            t_s=inst_order.t[:, p_i],
+                        )["c_hat_flat"]
+                        for p_i, sku in enumerate(inst_order.skus)
+                    }
+                    x_order = solve_nominal_marginal_cost_milp(mc_t, inst_order).x
+                elif pol_name == "supervised_dro":
+                    x_order = solve_scenario_reweighting_dro_milp(
+                        target_inp["sup_scen"],
+                        inst_order,
+                        alpha=float(sup_dro_params["alpha"]),
+                        risk_weight=float(sup_dro_params["risk_weight"]),
+                    ).x
+                else:  # dfl_dro
+                    x_order = solve_scenario_reweighting_dro_milp(
+                        target_inp["dfl_scen"],
+                        inst_order,
+                        alpha=float(dfl_dro_params["alpha"]),
+                        risk_weight=float(dfl_dro_params["risk_weight"]),
+                    ).x
+
+                if lead_time == 0:
+                    x_arrived = x_order
+                else:
+                    pipeline_queue.append(x_order)
+
+                inst_eval = AllocationInstance(
                     stores=base_inst.stores,
                     skus=base_inst.skus,
                     I=I_curr.copy(),
@@ -594,100 +816,28 @@ def run_multi_seed_and_carryover_experiments(
                     h=base_inst.h,
                     t=base_inst.t,
                 )
-
-                if pol_name == "equal_allocation":
-                    x_order = allocate_equal_shares(inst_t).x
-                elif pol_name == "proportional_allocation":
-                    x_order = allocate_proportional_shares(inp["trailing_signals"], inst_t).x
-                elif pol_name == "supervised_pto":
-                    mc_t = {
-                        sku: predict_sku_origin_outputs(
-                            sup_artifacts[sku],
-                            origin_df,
-                            I_s=I_curr[:, p_i],
-                            K_s=inst_t.K[:, p_i],
-                            b_s=inst_t.b[:, p_i],
-                            h_s=inst_t.h[:, p_i],
-                            t_s=inst_t.t[:, p_i],
-                        )["c_hat_flat"]
-                        for p_i, sku in enumerate(inst_t.skus)
-                    }
-                    x_order = solve_nominal_marginal_cost_milp(mc_t, inst_t).x
-                elif pol_name == "dfl_pto":
-                    mc_t = {
-                        sku: predict_sku_origin_outputs(
-                            dfl_artifacts[sku],
-                            origin_df,
-                            I_s=I_curr[:, p_i],
-                            K_s=inst_t.K[:, p_i],
-                            b_s=inst_t.b[:, p_i],
-                            h_s=inst_t.h[:, p_i],
-                            t_s=inst_t.t[:, p_i],
-                        )["c_hat_flat"]
-                        for p_i, sku in enumerate(inst_t.skus)
-                    }
-                    x_order = solve_nominal_marginal_cost_milp(mc_t, inst_t).x
-                elif pol_name == "supervised_dro":
-                    s_scen = copula_sup.sample_scenarios(
-                        inp["sup_pmfs"],
-                        num_scenarios=cfg.dro.num_scenarios,
-                        seed=cfg.global_seed + 1000 + o_idx,
-                    )
-                    x_order = solve_scenario_reweighting_dro_milp(
-                        s_scen,
-                        inst_t,
-                        alpha=float(sup_dro_params["alpha"]),
-                        risk_weight=float(sup_dro_params["risk_weight"]),
-                    ).x
-                elif pol_name == "dfl_dro":
-                    d_scen = copula_dfl.sample_scenarios(
-                        inp["dfl_pmfs"],
-                        num_scenarios=cfg.dro.num_scenarios,
-                        seed=cfg.global_seed + 1000 + o_idx,
-                    )
-                    x_order = solve_scenario_reweighting_dro_milp(
-                        d_scen,
-                        inst_t,
-                        alpha=float(dfl_dro_params["alpha"]),
-                        risk_weight=float(dfl_dro_params["risk_weight"]),
-                    ).x
-                else:
-                    x_order = solve_clairvoyant_oracle(D_real, inst_t).x
-
-                # Receive shipment ordered `lead_time` weeks ago
-                if lead_time == 0:
-                    x_arrived = x_order
-                else:
-                    x_arrived = pipeline_queue.pop(0)
-                    # Cap arrived units if store capacity binds with carried-over stock
-                    rem_c = np.maximum(0, inst_t.C - np.sum(I_curr, axis=1))
-                    for s_i in range(S):
-                        if np.sum(x_arrived[s_i, :]) > rem_c[s_i]:
-                            scale = float(rem_c[s_i]) / max(1.0, float(np.sum(x_arrived[s_i, :])))
-                            x_arrived[s_i, :] = np.floor(x_arrived[s_i, :] * scale).astype(int)
-                    pipeline_queue.append(x_order)
-
-                cb = evaluate_exact_cost(x_arrived, D_real, inst_t)
+                cb = evaluate_exact_cost(x_arrived, D_real, inst_eval)
                 tot_cost += cb.total_cost_mu
                 tot_shortage += cb.shortage_cost_mu
                 tot_holding += cb.holding_cost_mu
                 tot_filled += cb.filled_units
                 tot_demand += int(np.sum(D_real))
 
-                # Carry over remaining on-hand stock to week t+1 (capped by store capacity)
                 I_next = np.maximum(0, I_curr + x_arrived - D_real)
                 for s_i in range(S):
-                    if np.sum(I_next[s_i, :]) > inst_t.C[s_i]:
-                        scale = float(inst_t.C[s_i]) / float(np.sum(I_next[s_i, :]))
+                    if np.sum(I_next[s_i, :]) > inst_eval.C[s_i]:
+                        scale = float(inst_eval.C[s_i]) / float(np.sum(I_next[s_i, :]))
                         I_next[s_i, :] = np.floor(I_next[s_i, :] * scale).astype(int)
                 I_curr = I_next
 
             n_orig = max(1, len(origin_inputs))
+            mean_pol_cost = tot_cost / n_orig
             carryover_rows.append(
                 {
                     "lead_time_weeks": int(lead_time),
                     "policy": pol_name,
-                    "mean_cost_mu": tot_cost / n_orig,
+                    "mean_cost_mu": mean_pol_cost,
+                    "rolling_oracle_regret_mu": max(0.0, mean_pol_cost - oracle_mp_cost),
                     "mean_shortage_cost_mu": tot_shortage / n_orig,
                     "mean_holding_cost_mu": tot_holding / n_orig,
                     "fill_rate": float(tot_filled / max(1, tot_demand)),
@@ -697,7 +847,61 @@ def run_multi_seed_and_carryover_experiments(
             )
 
     carryover_df = pd.DataFrame(carryover_rows)
-    return multi_seed_df, carryover_df
+
+    # P1.3: Full-Horizon Cost–Risk–Service-Level Trade-Off Frontier across test origins
+    frontier_rows: list[dict[str, Any]] = []
+    probs_orig = np.full(len(origin_inputs), 1.0 / max(1, len(origin_inputs)), dtype=float)
+    alpha_sweep = [a for a in cfg.dro.alpha_grid if a in {0.50, 0.75, 0.90, 0.95}] or [0.90]
+    rw_sweep = cfg.dro.risk_weight_grid
+
+    for fam_name, scen_key in [("dfl_dro", "dfl_scen"), ("supervised_dro", "sup_scen")]:
+        for a_val in alpha_sweep:
+            for rw_val in rw_sweep:
+                orig_costs: list[float] = []
+                orig_shortages: list[float] = []
+                orig_holdings: list[float] = []
+                orig_fills: list[float] = []
+                orig_stockout_freq: list[float] = []
+                orig_mod_exp: list[float] = []
+                orig_mod_cvar: list[float] = []
+
+                for inp in origin_inputs:
+                    D_r = inp["D_realized"]
+                    sc_arr = inp[scen_key]
+                    dro_sol = solve_scenario_reweighting_dro_milp(
+                        sc_arr, base_inst, alpha=float(a_val), risk_weight=float(rw_val)
+                    )
+                    cb = evaluate_exact_cost(dro_sol.x, D_r, base_inst)
+                    orig_costs.append(cb.total_cost_mu)
+                    orig_shortages.append(cb.shortage_cost_mu)
+                    orig_holdings.append(cb.holding_cost_mu)
+                    orig_fills.append(cb.fill_rate)
+                    stockout_rate = float(np.mean((D_r - base_inst.I - dro_sol.x) > 0))
+                    orig_stockout_freq.append(stockout_rate)
+                    orig_mod_exp.append(dro_sol.model_expected_cost_mu)
+                    orig_mod_cvar.append(dro_sol.model_cvar_cost_mu)
+
+                c_arr = np.array(orig_costs, dtype=float)
+                real_cvar90, _ = exact_ambiguity_set_worst_case_loss(c_arr, probs_orig, alpha=0.90)
+                frontier_rows.append(
+                    {
+                        "policy_family": fam_name,
+                        "alpha": float(a_val),
+                        "risk_weight": float(rw_val),
+                        "realized_mean_cost_mu": float(np.mean(c_arr)),
+                        "realized_cvar90_cost_mu": float(real_cvar90),
+                        "mean_fill_rate": float(np.mean(orig_fills)),
+                        "service_level_no_stockout_rate": float(1.0 - np.mean(orig_stockout_freq)),
+                        "mean_shortage_cost_mu": float(np.mean(orig_shortages)),
+                        "mean_holding_cost_mu": float(np.mean(orig_holdings)),
+                        "model_expected_cost_mean_mu": float(np.mean(orig_mod_exp)),
+                        "model_cvar_cost_mean_mu": float(np.mean(orig_mod_cvar)),
+                        "data_mode": cfg.data_mode,
+                    }
+                )
+
+    frontier_df = pd.DataFrame(frontier_rows)
+    return multi_seed_df, carryover_df, frontier_df
 
 
 def run_rolling_backtest(
@@ -859,17 +1063,17 @@ def run_rolling_backtest(
 
         policy_solutions: dict[str, tuple[np.ndarray, str, bool, float, float, float]] = {}
         # Compute model-implied expected cost & CVaR for each policy on reference scenarios
-        for pol_name, sol_obj, scen_ref in [
-            ("equal_allocation", res_equal, sup_scenarios),
-            ("proportional_allocation", res_prop, sup_scenarios),
-            ("supervised_pto", res_sup_pto, sup_scenarios),
-            ("supervised_dro", res_sup_dro, sup_scenarios),
-            ("dfl_pto", res_dfl_pto, dfl_scenarios),
-            ("dfl_dro", res_dfl_dro, dfl_scenarios),
-            ("clairvoyant_oracle", res_oracle, sup_scenarios),
+        for pol_name, sol_obj, scen_ref, alpha_ref in [
+            ("equal_allocation", res_equal, sup_scenarios, cfg.dro.alpha),
+            ("proportional_allocation", res_prop, sup_scenarios, cfg.dro.alpha),
+            ("supervised_pto", res_sup_pto, sup_scenarios, cfg.dro.alpha),
+            ("supervised_dro", res_sup_dro, sup_scenarios, sup_alpha_star),
+            ("dfl_pto", res_dfl_pto, dfl_scenarios, cfg.dro.alpha),
+            ("dfl_dro", res_dfl_dro, dfl_scenarios, dfl_alpha_star),
+            ("clairvoyant_oracle", res_oracle, sup_scenarios, cfg.dro.alpha),
         ]:
             scen_stats = evaluate_allocation_on_scenarios(
-                sol_obj.x, scen_ref, inst, alpha=cfg.dro.alpha
+                sol_obj.x, scen_ref, inst, alpha=alpha_ref
             )
             policy_solutions[pol_name] = (
                 sol_obj.x,
@@ -920,6 +1124,13 @@ def run_rolling_backtest(
                 }
             )
 
+            if pol_name == "supervised_dro":
+                pol_scen_prof = f"alpha={sup_alpha_star:.2f}_rw={sup_rw_star:.2f}"
+            elif pol_name == "dfl_dro":
+                pol_scen_prof = f"alpha={dfl_alpha_star:.2f}_rw={dfl_rw_star:.2f}"
+            else:
+                pol_scen_prof = "nominal_or_heuristic"
+
             for s_i, store in enumerate(inst.stores):
                 for p_i, sku in enumerate(inst.skus):
                     allocation_rows.append(
@@ -935,7 +1146,7 @@ def run_rolling_backtest(
                             "warehouse_supply_units": int(inst.W[p_i]),
                             "store_sku_unit_cap": int(inst.K[s_i, p_i]),
                             "store_total_capacity_units": int(inst.C[s_i]),
-                            "scenario_profile": f"alpha={cfg.dro.alpha:.2f}_rw={cfg.dro.risk_weight:.2f}",
+                            "scenario_profile": pol_scen_prof,
                             "data_mode": cfg.data_mode,
                             "is_feasible": bool(is_feas),
                             "solver_status": status_str,
@@ -1015,8 +1226,8 @@ def run_rolling_backtest(
         seed=cfg.global_seed,
     )
 
-    # Priorities 4 & 7: Multi-seed stability across `cfg.evaluation.seeds` & rolling carryover/lead-time evaluation
-    multi_seed_df, carryover_df = run_multi_seed_and_carryover_experiments(
+    # Priorities 4 & 7: Multi-seed stability across `cfg.evaluation.seeds`, rolling carryover/lead-time, and cost-risk-service frontier
+    multi_seed_df, carryover_df, frontier_df = run_multi_seed_and_carryover_experiments(
         cfg=cfg,
         weekly_df=weekly_df,
         inv_df=inv_df,
@@ -1035,6 +1246,7 @@ def run_rolling_backtest(
     summary_sha = save_parquet(summary_df, art_dir / "summary_metrics.parquet")
     multiseed_sha = save_parquet(multi_seed_df, art_dir / "multi_seed_summary.parquet")
     carryover_sha = save_parquet(carryover_df, art_dir / "carryover_leadtime_metrics.parquet")
+    frontier_sha = save_parquet(frontier_df, art_dir / "cost_risk_service_frontier.parquet")
     save_json(cached_origin_bundles, art_dir / "cached_origin_bundles.json")
     save_json(val_tuning, art_dir / "validation_dro_tuning.json")
 
@@ -1073,6 +1285,7 @@ def run_rolling_backtest(
         "config_path": cfg.config_path,
         "config_sha256": cfg.config_sha256,
         "data_mode": cfg.data_mode,
+        "demand_regime": getattr(cfg.data, "demand_regime", "regular"),
         "economic_currency": cfg.economics.currency,
         "inventory_data_provenance": "synthetic",
         "dataset_hashes": dataset_hashes,
@@ -1095,6 +1308,7 @@ def run_rolling_backtest(
             "summary_metrics_parquet": summary_sha,
             "multi_seed_summary_parquet": multiseed_sha,
             "carryover_leadtime_metrics_parquet": carryover_sha,
+            "cost_risk_service_frontier_parquet": frontier_sha,
         },
         "copula_info": copula_info,
         "validation_dro_tuning": {
@@ -1105,6 +1319,7 @@ def run_rolling_backtest(
             "dfl_scenario_diagnostics": val_tuning["dfl_scenario_diagnostics"],
         },
         "evaluated_seeds": [int(s) for s in cfg.evaluation.seeds],
+        "independent_training_seeds": bool(getattr(cfg.evaluation, "independent_training_seeds", True)),
         "evaluated_policies": REQUIRED_POLICIES,
         "origin_evaluations": origin_env_records,
         **bootstrap_meta,
@@ -1116,5 +1331,6 @@ def run_rolling_backtest(
         "backtest_metrics": metrics_df,
         "summary_metrics": summary_df,
         "risk_sensitivity": sensitivity_df,
+        "cost_risk_service_frontier": frontier_df,
         "run_manifest": run_manifest,
     }

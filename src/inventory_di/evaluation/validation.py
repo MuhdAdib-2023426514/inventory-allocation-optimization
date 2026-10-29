@@ -15,6 +15,7 @@ def build_dashboard_qa_bundle(
     cfg: ExperimentConfig,
     summary_df: pd.DataFrame,
     sensitivity_df: pd.DataFrame,
+    run_manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build deterministic QA bundle conforming to `.agents/skills/dashboard-qa`."""
     badge = (
@@ -31,8 +32,19 @@ def build_dashboard_qa_bundle(
         "Page E — Evidence & Business Impact",
     ]
 
+    val_tuning = (run_manifest or {}).get("validation_dro_tuning", {})
+    dfl_sel = val_tuning.get("dfl_dro_selected", {})
+    alpha_used = float(dfl_sel.get("alpha", cfg.dro.alpha))
+    rw_used = float(dfl_sel.get("risk_weight", cfg.dro.risk_weight))
+
+    sens_path = Path(cfg.data.artifacts_dir) / "risk_sensitivity.parquet"
+    sens_len = int(len(sensitivity_df))
+    if sens_len == 0 and sens_path.exists():
+        sens_len = int(len(pd.read_parquet(sens_path)))
+
     return {
         "data_mode": cfg.data_mode,
+        "demand_regime": getattr(cfg.data, "demand_regime", "regular"),
         "provenance_badge": badge,
         "currency_label": cfg.economics.currency,
         "economic_currency": cfg.economics.currency,
@@ -55,8 +67,10 @@ def build_dashboard_qa_bundle(
             "csv_download_enabled": True,
         },
         "page_d_risk": {
-            "alpha": float(cfg.dro.alpha),
-            "risk_weight": float(cfg.dro.risk_weight),
+            "alpha": alpha_used,
+            "risk_weight": rw_used,
+            "config_default_alpha": float(cfg.dro.alpha),
+            "config_default_risk_weight": float(cfg.dro.risk_weight),
             "model_expected_cost_mu": float(dfl_dro_row["model_expected_cost_mean_mu"]),
             "model_cvar_cost_mu": float(dfl_dro_row["model_cvar_cost_mean_mu"]),
             "realized_test_cost_mu": float(dfl_dro_row["mean_cost_mu"]),
@@ -72,7 +86,7 @@ def build_dashboard_qa_bundle(
                 "model_cvar_cost_mu": float(dfl_dro_row["model_cvar_cost_mean_mu"]),
                 "realized_test_cost_mu": float(dfl_dro_row["mean_cost_mu"]),
             },
-            "sensitivity_rows_available": int(len(sensitivity_df)),
+            "sensitivity_rows_available": sens_len,
         },
         "page_e_evidence": {
             "policies_shown": summary_df["policy"].tolist(),
@@ -131,10 +145,19 @@ def generate_markdown_report(
             f"**{dfl_pto_vs_sup_pto:+.2f} MU**."
         )
 
+    val_tuning = run_manifest.get("validation_dro_tuning") or {}
+    sup_sel_meta = val_tuning.get("supervised_dro_selected", {})
+    dfl_sel_meta = val_tuning.get("dfl_dro_selected", {})
+    sup_alpha_star = float(sup_sel_meta.get("alpha", cfg.dro.alpha))
+    sup_rw_star = float(sup_sel_meta.get("risk_weight", cfg.dro.risk_weight))
+    dfl_alpha_star = float(dfl_sel_meta.get("alpha", cfg.dro.alpha))
+    dfl_rw_star = float(dfl_sel_meta.get("risk_weight", cfg.dro.risk_weight))
+    regime_label = getattr(cfg.data, "demand_regime", "regular")
+
     lines = [
         "# Inventory Allocation Experiment Results Summary",
         "",
-        f"- **Data Provenance / Mode:** {badge}",
+        f"- **Data Provenance / Mode:** {badge} (Demand Regime: `{regime_label}`)",
         f"- **Run ID:** `{cfg.run_id}` (Global Seed: `{cfg.global_seed}`, Git Commit: `{run_manifest['git_commit']}`)",
         "- **Economic Units:** Generic Monetary Units (`MU`), synthetic inventory/operating constraints (`data_provenance='synthetic'`).",
         f"- **Held-out Test Origins:** `{run_manifest['num_test_origins']}` chronological weekly origins.",
@@ -163,7 +186,7 @@ def generate_markdown_report(
             f"- {verdict}",
             f"- **Heuristic Baselines:** `equal_allocation` averaged **{eq_row['mean_cost_mu']:.2f} MU** (fill rate **{100.0 * eq_row['mean_fill_rate']:.1f}%**) and `proportional_allocation` averaged **{prop_row['mean_cost_mu']:.2f} MU** (fill rate **{100.0 * prop_row['mean_fill_rate']:.1f}%**).",
             f"- **DFL vs. Supervised PTO:** `dfl_pto` averaged **{dfl_pto_row['mean_cost_mu']:.2f} MU** (regret **{dfl_pto_row['mean_regret_mu']:.2f} MU**) compared to `supervised_pto` at **{sup_pto_row['mean_cost_mu']:.2f} MU** (regret **{sup_pto_row['mean_regret_mu']:.2f} MU**).",
-            f"- **DRO Tail-Risk Protection:** `supervised_dro` achieved realized tail cost $\\text{{CVaR}}_{{0.90}} = {sup_dro_row['realized_cvar90_cost_mu']:.2f}\\text{{ MU}}$ and `dfl_dro` achieved $\\text{{CVaR}}_{{0.90}} = {dfl_dro_row['realized_cvar90_cost_mu']:.2f}\\text{{ MU}}$ (under probability-reweighting ambiguity set $\\mathcal{{P}}_\\alpha$ with $\\alpha={cfg.dro.alpha:.2f}, \\text{{risk\\_weight}}={cfg.dro.risk_weight:.2f}$).",
+            f"- **DRO Tail-Risk Protection:** `supervised_dro` achieved realized tail cost $\\text{{CVaR}}_{{0.90}} = {sup_dro_row['realized_cvar90_cost_mu']:.2f}\\text{{ MU}}$ (validation-selected $\\alpha^*={sup_alpha_star:.2f}, \\text{{risk\\_weight}}^*={sup_rw_star:.2f}$) and `dfl_dro` achieved $\\text{{CVaR}}_{{0.90}} = {dfl_dro_row['realized_cvar90_cost_mu']:.2f}\\text{{ MU}}$ (validation-selected $\\alpha^*={dfl_alpha_star:.2f}, \\text{{risk\\_weight}}^*={dfl_rw_star:.2f}$, config default $\\alpha={cfg.dro.alpha:.2f}, \\text{{risk\\_weight}}={cfg.dro.risk_weight:.2f}$).",
             f"- **Statistical Caveat:** {run_manifest['small_sample_caveat']}",
             "",
             "## 3. Model Expected Cost vs. Model CVaR vs. Realized Historical Test Cost",
@@ -199,7 +222,6 @@ def generate_markdown_report(
             )
 
     # Priority 2 & 3: Scenario Diagnostics & Validation DRO Parameter Selection
-    val_tuning = run_manifest.get("validation_dro_tuning")
     if val_tuning:
         sup_sd = val_tuning.get("supervised_scenario_diagnostics", {})
         dfl_sd = val_tuning.get("dfl_scenario_diagnostics", {})
@@ -214,37 +236,50 @@ def generate_markdown_report(
                 f"  - `supervised` copula scenarios: raw mean bias `{sup_sd.get('raw_scenario_mean_bias_units', 0.0):+.2f}` units $\\rightarrow$ calibrated bias `{sup_sd.get('calibrated_scenario_mean_bias_units', 0.0):+.2f}` units; Energy Score `{sup_sd.get('raw_energy_score', 0.0):.2f}` $\\rightarrow$ `{sup_sd.get('calibrated_energy_score', 0.0):.2f}` (mean scale factor `{sup_sd.get('mean_scale_factor', 1.0):.2f}`).",
                 f"  - `dfl` (`JointMultiSKUMarginalAllocationModel`) copula scenarios: raw mean bias `{dfl_sd.get('raw_scenario_mean_bias_units', 0.0):+.2f}` units $\\rightarrow$ calibrated bias `{dfl_sd.get('calibrated_scenario_mean_bias_units', 0.0):+.2f}` units; Energy Score `{dfl_sd.get('raw_energy_score', 0.0):.2f}` $\\rightarrow$ `{dfl_sd.get('calibrated_energy_score', 0.0):.2f}` (mean scale factor `{dfl_sd.get('mean_scale_factor', 1.0):.2f}`).",
                 "- **Validation-Selected DRO Hyperparameters (`split == 'val'`):**",
-                f"  - `supervised_dro`: selected $\\alpha^* = {sup_sel.get('alpha', cfg.dro.alpha):.2f}, \\text{{risk\\_weight}}^* = {sup_sel.get('risk_weight', cfg.dro.risk_weight):.2f}$.",
-                f"  - `dfl_dro`: selected $\\alpha^* = {dfl_sel.get('alpha', cfg.dro.alpha):.2f}, \\text{{risk\\_weight}}^* = {dfl_sel.get('risk_weight', cfg.dro.risk_weight):.2f}$.",
+                f"  - `supervised_dro`: selected $\\alpha^* = {sup_sel.get('alpha', cfg.dro.alpha):.2f}, \\text{{risk\\_weight}}^* = {sup_sel.get('risk_weight', cfg.dro.risk_weight):.2f}$ (config default $\\alpha = {cfg.dro.alpha:.2f}, \\text{{risk\\_weight}} = {cfg.dro.risk_weight:.2f}$).",
+                f"  - `dfl_dro`: selected $\\alpha^* = {dfl_sel.get('alpha', cfg.dro.alpha):.2f}, \\text{{risk\\_weight}}^* = {dfl_sel.get('risk_weight', cfg.dro.risk_weight):.2f}$ (config default $\\alpha = {cfg.dro.alpha:.2f}, \\text{{risk\\_weight}} = {cfg.dro.risk_weight:.2f}$).",
             ]
         )
 
-    # Priority 4: Multi-Seed Reliability Table
+    # Priority 4: Multi-Seed Reliability Table (Independent Neural Network Training Seeds + Scenario Seeds)
     art_dir = Path(cfg.data.artifacts_dir)
     ms_path = art_dir / "multi_seed_summary.parquet"
     if ms_path.exists():
         ms_df = pd.read_parquet(ms_path)
+        if "mean_regret_mu" not in ms_df.columns:
+            oracle_by_seed = (
+                ms_df[ms_df["policy"] == "clairvoyant_oracle"]
+                .set_index("seed")["mean_cost_mu"]
+                .to_dict()
+            )
+            ms_df["mean_regret_mu"] = ms_df.apply(
+                lambda r: float(r["mean_cost_mu"] - oracle_by_seed.get(r["seed"], 0.0)), axis=1
+            )
         agg_ms = (
             ms_df.groupby("policy", as_index=False)
             .agg(
                 mean_cost_across_seeds=("mean_cost_mu", "mean"),
                 std_cost_across_seeds=("mean_cost_mu", "std"),
+                mean_regret_across_seeds=("mean_regret_mu", "mean"),
                 mean_fill_across_seeds=("mean_fill_rate", "mean"),
             )
         )
         lines.extend(
             [
                 "",
-                f"## 6. Multi-Seed Stability Across Seeds `{run_manifest.get('evaluated_seeds', cfg.evaluation.seeds)}` (Priority 4)",
+                f"## 6. Independent Training-Seed & Scenario-Seed Stability Across Seeds `{run_manifest.get('evaluated_seeds', cfg.evaluation.seeds)}` (Priority 4 / P1.2)",
                 "",
-                "| Policy | Mean Cost Across Seeds (MU) | Seed SD (MU) | Mean Fill Rate (%) |",
-                "| :--- | ---: | ---: | ---: |",
+                "Each seed independently initializes and trains both `supervised` and `dfl` neural networks (`training_seed_independent = True`) and draws independent copula scenario sets:",
+                "",
+                "| Policy | Mean Cost Across Seeds (MU) | Seed SD (MU) | Mean Regret Across Seeds (MU) | Mean Fill Rate (%) |",
+                "| :--- | ---: | ---: | ---: | ---: |",
             ]
         )
         for r in agg_ms.itertuples(index=False):
             sd_val = 0.0 if pd.isna(r.std_cost_across_seeds) else float(r.std_cost_across_seeds)
+            reg_val = float(getattr(r, "mean_regret_across_seeds", 0.0))
             lines.append(
-                f"| `{r.policy}` | {r.mean_cost_across_seeds:.2f} | {sd_val:.2f} | {100.0 * r.mean_fill_across_seeds:.1f}% |"
+                f"| `{r.policy}` | {r.mean_cost_across_seeds:.2f} | {sd_val:.2f} | {reg_val:.2f} | {100.0 * r.mean_fill_across_seeds:.1f}% |"
             )
 
     # Priority 7: Multi-Period Rolling Inventory Carryover & Lead Time Table
@@ -254,22 +289,76 @@ def generate_markdown_report(
         lines.extend(
             [
                 "",
-                "## 7. Rolling Inventory Carryover & Replenishment Lead-Time Evaluation (Priority 7)",
+                "## 7. Rolling Inventory Carryover & Replenishment Lead-Time Evaluation (Priority 7 / P1.1)",
                 "",
-                "| Lead Time (Weeks) | Policy | Rolling Mean Cost (MU) | Shortage Cost (MU) | Holding Cost (MU) | Fill Rate (%) | Ending Inventory (Units) |",
-                "| :---: | :--- | ---: | ---: | ---: | ---: | ---: |",
+                "For `clairvoyant_oracle`, the multi-period horizon MILP (`solve_multiperiod_carryover_oracle`) optimizes jointly across $t=0 \\dots T-1$ with exact carryover state transitions and shared initial pipeline inventory, guaranteeing nonnegative rolling oracle regret ($\\text{Rolling Regret} \\ge 0$) at both $L=0$ and $L=1$:",
+                "",
+                "| Lead Time (Weeks) | Policy | Rolling Mean Cost (MU) | Rolling Oracle Regret (MU) | Shortage Cost (MU) | Holding Cost (MU) | Fill Rate (%) | Ending Inventory (Units) |",
+                "| :---: | :--- | ---: | ---: | ---: | ---: | ---: | ---: |",
             ]
         )
         for r in co_df.itertuples(index=False):
+            reg_val = float(getattr(r, "rolling_oracle_regret_mu", 0.0))
             lines.append(
-                f"| `{r.lead_time_weeks}` | `{r.policy}` | {r.mean_cost_mu:.2f} | {r.mean_shortage_cost_mu:.2f} | "
+                f"| `{r.lead_time_weeks}` | `{r.policy}` | {r.mean_cost_mu:.2f} | {reg_val:.2f} | {r.mean_shortage_cost_mu:.2f} | "
                 f"{r.mean_holding_cost_mu:.2f} | {100.0 * r.fill_rate:.1f}% | {r.ending_inventory_units} |"
+            )
+
+    # P1.3: Full-Horizon Cost-Risk-Service-Level Trade-Off Frontier
+    fr_path = art_dir / "cost_risk_service_frontier.parquet"
+    if fr_path.exists():
+        fr_df = pd.read_parquet(fr_path)
+        lines.extend(
+            [
+                "",
+                "## 8. Full-Horizon Cost–Risk–Service-Level Trade-Off Frontier (`P1.3`)",
+                "",
+                "Evaluated across all held-out test origins over $(\\alpha, \\text{risk\\_weight})$:",
+                "",
+                "| Policy Family | `alpha` | `risk_weight` | Realized Mean Cost (MU) | Realized CVaR_0.90 (MU) | Fill Rate (%) | Period No-Stockout Rate (%) | Mean Shortage Cost (MU) | Mean Holding Cost (MU) |",
+                "| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for r in fr_df.itertuples(index=False):
+            lines.append(
+                f"| `{r.policy_family}` | {r.alpha:.2f} | {r.risk_weight:.2f} | {r.realized_mean_cost_mu:.2f} | "
+                f"{r.realized_cvar90_cost_mu:.2f} | {100.0 * r.mean_fill_rate:.1f}% | "
+                f"{100.0 * r.service_level_no_stockout_rate:.1f}% | {r.mean_shortage_cost_mu:.2f} | {r.mean_holding_cost_mu:.2f} |"
+            )
+
+    # P2.1: Cross-Regime M5 Comparison (Regular vs Intermittent SKUs) if both exist
+    reg_sum_path = Path("artifacts/m5/summary_metrics.parquet")
+    int_sum_path = Path("artifacts/m5_intermittent/summary_metrics.parquet")
+    if reg_sum_path.exists() and int_sum_path.exists():
+        reg_df = pd.read_parquet(reg_sum_path)
+        int_df = pd.read_parquet(int_sum_path)
+        merged_reg = reg_df[["policy", "mean_cost_mu", "realized_cvar90_cost_mu", "mean_fill_rate"]].merge(
+            int_df[["policy", "mean_cost_mu", "realized_cvar90_cost_mu", "mean_fill_rate"]],
+            on="policy",
+            suffixes=("_regular", "_intermittent"),
+        )
+        lines.extend(
+            [
+                "",
+                "## 9. Demand Regime Generalization: Regular vs. Intermittent M5 SKUs (`P2.1`)",
+                "",
+                "Comparison across the 10 regular-selling `HOUSEHOLD` SKUs (`ADI <= 1.25`) vs. 10 intermittent/lumpy `HOUSEHOLD` SKUs (`ADI >= 1.35`, selected strictly on `split == 'train'`):",
+                "",
+                "| Policy | Regular Mean Cost (MU) | Regular CVaR_0.90 (MU) | Regular Fill Rate (%) | Intermittent Mean Cost (MU) | Intermittent CVaR_0.90 (MU) | Intermittent Fill Rate (%) |",
+                "| :--- | ---: | ---: | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for r in merged_reg.itertuples(index=False):
+            lines.append(
+                f"| `{r.policy}` | {r.mean_cost_mu_regular:.2f} | {r.realized_cvar90_cost_mu_regular:.2f} | "
+                f"{100.0 * r.mean_fill_rate_regular:.1f}% | {r.mean_cost_mu_intermittent:.2f} | "
+                f"{r.realized_cvar90_cost_mu_intermittent:.2f} | {100.0 * r.mean_fill_rate_intermittent:.1f}% |"
             )
 
     lines.extend(
         [
             "",
-            "## 8. Methodological Caveats & Limitations",
+            "## 10. Methodological Caveats & Limitations",
             "",
             "1. **Observed Sales != Latent Demand:** Even when run on M5 data, observed unit sales are right-censored by historical stockouts; in `synthetic_demo` mode (`DEMO / SYNTHETIC`), demand is generated from a documented Poisson-Gamma weekly process with shared cross-store shocks.",
             "2. **Synthetic Operating Economics:** Opening stock, warehouse supply caps, store capacities, and unit costs (`MU`) are explicitly synthetic (`data_provenance='synthetic'`).",
@@ -288,6 +377,6 @@ def generate_markdown_report(
     top_rep.parent.mkdir(parents=True, exist_ok=True)
     top_rep.write_text(report_md, encoding="utf-8")
 
-    qa_bundle = build_dashboard_qa_bundle(cfg, summary_df, pd.DataFrame())
+    qa_bundle = build_dashboard_qa_bundle(cfg, summary_df, pd.DataFrame(), run_manifest=run_manifest)
     save_json(qa_bundle, Path(cfg.data.artifacts_dir) / "dashboard_qa_bundle.json")
     return report_md
