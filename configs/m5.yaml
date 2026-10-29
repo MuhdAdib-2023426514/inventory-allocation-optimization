@@ -1,0 +1,50 @@
+mode: "m5"
+data_mode: "m5_sales_proxy"
+global_seed: 42
+run_id: "m5_v1"
+
+data:
+  num_stores: 5
+  num_skus: 10
+  num_weeks: 120
+  train_weeks: 100
+  val_weeks: 8
+  test_weeks: 12
+  raw_m5_dir: "data/raw/m5"
+  processed_dir: "data/processed/m5"
+  artifacts_dir: "artifacts/m5"
+  reports_dir: "reports/m5"
+
+economics:
+  currency: "MU"
+  opening_stock_units: 0
+  store_sku_unit_cap: 15
+  warehouse_supply_ratio: 0.80
+  store_total_capacity_units: 120
+  unit_shortage_penalty_mu: 6.0
+  unit_holding_cost_mu: 1.0
+  unit_ship_cost_mu: 0.25
+
+model:
+  max_demand_support_h: 20
+  hidden_dim: 48
+  learning_rate: 0.01
+  epochs: 30
+  batch_size: 16
+  lambda_dfl: 1.0
+  lambda_dfl_grid: [0.0, 0.5, 1.0, 2.0]
+  spoplus_processes: 1
+
+dro:
+  num_scenarios: 50
+  alpha: 0.90
+  risk_weight: 0.50
+  alpha_grid: [0.0, 0.50, 0.75, 0.90, 0.95]
+  risk_weight_grid: [0.0, 0.25, 0.50, 0.75, 1.0]
+  supply_stress_multipliers: [0.6, 0.8, 1.0, 1.2]
+
+evaluation:
+  trailing_weeks_proportional: 8
+  bootstrap_resamples: 200
+  bootstrap_block_size: 2
+  seeds: [42, 101, 202]
