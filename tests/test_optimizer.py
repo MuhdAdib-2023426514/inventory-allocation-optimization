@@ -173,7 +173,8 @@ def test_multiperiod_carryover_oracle_nonnegative_regret() -> None:
                 else:
                     x_ord = oracle_mp["x_orders"][t_i]
 
-                sim.step(order_x=x_ord, realized_demand_D=D_horizon[t_i], period_idx=t_i)
+                sim.step(order_x=x_ord, realized_demand_D=D_horizon[t_i], period_idx=t_i,
+                         admitted_units=oracle_mp["admissions"][t_i] if pol == "clairvoyant_oracle" else None)
 
             sim_res = sim.get_summary()
             assert sim_res["is_conserved"]

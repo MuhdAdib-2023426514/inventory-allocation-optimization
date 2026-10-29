@@ -1,0 +1,54 @@
+{
+  "external_http_blocked": true,
+  "external_attempts": [],
+  "page_errors": [],
+  "console_errors": [],
+  "pages": [
+    {
+      "mode": "demo",
+      "page": "Page A \u2014 Problem & Data",
+      "seconds": 0.39243704099499155
+    },
+    {
+      "mode": "demo",
+      "page": "Page B \u2014 Models & Diagnostics",
+      "seconds": 0.787198250000074
+    },
+    {
+      "mode": "demo",
+      "page": "Page C \u2014 Allocation Results",
+      "seconds": 0.6352942919984343
+    },
+    {
+      "mode": "demo",
+      "page": "Page D \u2014 Risk & Robustness",
+      "seconds": 0.5940747909990023
+    },
+    {
+      "mode": "demo",
+      "page": "Page E \u2014 Evidence & Business Impact",
+      "seconds": 0.9120119159997557
+    }
+  ],
+  "controls": [
+    {
+      "mode": "demo",
+      "control": "Tail Ambiguity Parameter (alpha)",
+      "action": "minimum"
+    },
+    {
+      "mode": "demo",
+      "control": "Tail Risk Weight (risk_weight)",
+      "action": "minimum"
+    },
+    {
+      "mode": "demo",
+      "control": "Warehouse Supply Scarcity Multiplier",
+      "action": "minimum"
+    }
+  ],
+  "downloads": [
+    "reports/release/browser/demo_allocations.csv"
+  ],
+  "status": "PASS"
+}

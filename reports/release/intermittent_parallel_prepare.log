@@ -1,0 +1,12 @@
+/Users/runner/work/crossbow/crossbow/arrow/cpp/src/arrow/util/cpu_info.cc:181: IOError: sysctlbyname failed for 'hw.l1dcachesize'. Detail: [errno 1] Operation not permitted
+/Users/runner/work/crossbow/crossbow/arrow/cpp/src/arrow/util/cpu_info.cc:181: IOError: sysctlbyname failed for 'hw.l2cachesize'. Detail: [errno 1] Operation not permitted
+/Users/runner/work/crossbow/crossbow/arrow/cpp/src/arrow/util/cpu_info.cc:181: IOError: sysctlbyname failed for 'hw.l3cachesize'. Detail: [errno 1] Operation not permitted
+{
+  "command": "prepare",
+  "mode": "m5",
+  "data_mode": "m5_sales_proxy",
+  "processed_dir": "data/processed/m5_intermittent_v2",
+  "weekly_demand_rows": 6000,
+  "inventory_config_rows": 50,
+  "weekly_demand_sha256": "80eba8f2b48ee3f6ef512c41aa02a7af3f9e80bff566c3338a7317863dbd14c9"
+}

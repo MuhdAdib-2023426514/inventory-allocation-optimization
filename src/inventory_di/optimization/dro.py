@@ -34,6 +34,8 @@ class DROSolveResult:
     violations: list[str]
     runtime_seconds: float
     scenario_losses_mu: np.ndarray  # shape (J,)
+    mip_gap: float = 0.0
+    recomputed_objective: float | None = None
 
 
 def exact_ambiguity_set_worst_case_loss(
@@ -294,26 +296,11 @@ def solve_scenario_reweighting_dro_milp(
         integrality=integrality,
         bounds=(lb, ub),
         constraints=LinearConstraint(A, b_l, b_u),
+        options={"mip_rel_gap": 0.0},
     )
     runtime = time.perf_counter() - t0
-    if not res.success or res.x is None:
-        x_zero = np.zeros((S, P), dtype=int)
-        ok, viols = check_allocation_feasibility(x_zero, inst)
-        eval_zero = evaluate_allocation_on_scenarios(x_zero, scenarios, inst, alpha=alpha, probs=p)
-        return DROSolveResult(
-            x=x_zero,
-            solver_objective=float("nan"),
-            model_expected_cost_mu=float(eval_zero["expected_cost_mu"]),
-            model_cvar_cost_mu=float(eval_zero["cvar_cost_mu"]),
-            eta_var_mu=0.0,
-            alpha=float(alpha),
-            risk_weight=float(risk_weight),
-            solver_status=f"failed ({res.message})",
-            is_feasible=ok,
-            violations=viols,
-            runtime_seconds=runtime,
-            scenario_losses_mu=np.asarray(eval_zero["scenario_losses_mu"]),
-        )
+    if res.status != 0 or res.x is None:
+        raise RuntimeError(f"DRO solve rejected: {res.message}")
 
     x_sol = np.rint(res.x[:N]).astype(int).reshape(S, P)
     eta_val = float(res.x[idx_eta]) if rw > 0.0 else 0.0
@@ -323,9 +310,13 @@ def solve_scenario_reweighting_dro_milp(
     cvar_cost = float(scen_eval["cvar_cost_mu"])
     recomputed_obj = (1.0 - rw) * exp_cost + rw * cvar_cost
 
+    if not ok or not np.isclose(res.fun, recomputed_obj, atol=1e-4, rtol=1e-8):
+        raise AssertionError(f"DRO objective/feasibility mismatch: {res.fun}, {recomputed_obj}, {viols}")
     return DROSolveResult(
         x=x_sol,
-        solver_objective=recomputed_obj,
+        solver_objective=float(res.fun),
+        recomputed_objective=recomputed_obj,
+        mip_gap=float(res.mip_gap),
         model_expected_cost_mu=exp_cost,
         model_cvar_cost_mu=cvar_cost,
         eta_var_mu=eta_val,

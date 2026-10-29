@@ -1,0 +1,10 @@
+{
+  "command": "train",
+  "mode": "m5",
+  "data_mode": "m5_sales_proxy",
+  "model_choice": "all",
+  "checkpoints": {
+    "supervised_ckpt_sha256": "f3a41239e30c521409de146317ce5857928dab8f99e289cad20f9b5a5a68e239",
+    "dfl_ckpt_sha256": "77c6b28c4e930a69d4ad3ce1146c5b1f5899b1dc7ce2b459cbf5862bbbbe452f"
+  }
+}

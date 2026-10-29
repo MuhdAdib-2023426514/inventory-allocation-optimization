@@ -1,0 +1,7 @@
+{
+  "command": "report",
+  "mode": "demo",
+  "data_mode": "synthetic_demo",
+  "report_path": "reports/demo_v2/results_summary.md",
+  "top_report_path": "reports/results_summary.md"
+}

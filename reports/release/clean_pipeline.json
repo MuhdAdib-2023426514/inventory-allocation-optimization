@@ -1,0 +1,26 @@
+[
+  {
+    "stage": "prepare",
+    "exit_code": 0,
+    "seconds": 4.223092208005255,
+    "log": "/tmp/inventory_clean_prepare.log"
+  },
+  {
+    "stage": "train",
+    "exit_code": 0,
+    "seconds": 12.525204375000612,
+    "log": "/tmp/inventory_clean_train.log"
+  },
+  {
+    "stage": "backtest",
+    "exit_code": 0,
+    "seconds": 38.92520204200264,
+    "log": "/tmp/inventory_clean_backtest.log"
+  },
+  {
+    "stage": "report",
+    "exit_code": 0,
+    "seconds": 3.227022749997559,
+    "log": "/tmp/inventory_clean_report.log"
+  }
+]

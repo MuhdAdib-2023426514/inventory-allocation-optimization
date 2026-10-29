@@ -1,0 +1,68 @@
+HighsMipSolverData::transformNewIntegerFeasibleSolution tmpSolver.run();
+HighsMipSolverData::transformNewIntegerFeasibleSolution tmpSolver.run();
+HighsMipSolverData::transformNewIntegerFeasibleSolution tmpSolver.run();
+HighsMipSolverData::transformNewIntegerFeasibleSolution tmpSolver.run();
+HighsMipSolverData::transformNewIntegerFeasibleSolution tmpSolver.run();
+HighsMipSolverData::transformNewIntegerFeasibleSolution tmpSolver.run();
+{
+  "command": "backtest",
+  "mode": "m5",
+  "data_mode": "m5_sales_proxy",
+  "num_test_origins": 12,
+  "policies": [
+    {
+      "policy": "equal_allocation",
+      "mean_cost_mu": 174.44583333333333,
+      "mean_regret_mu": 84.59583333333332,
+      "mean_fill_rate": 0.5619472760900841
+    },
+    {
+      "policy": "proportional_allocation",
+      "mean_cost_mu": 176.94166666666663,
+      "mean_regret_mu": 87.09166666666668,
+      "mean_fill_rate": 0.5531976203257729
+    },
+    {
+      "policy": "supervised_pto",
+      "mean_cost_mu": 169.93749999999997,
+      "mean_regret_mu": 80.08749999999998,
+      "mean_fill_rate": 0.5734996990162865
+    },
+    {
+      "policy": "supervised_dro",
+      "mean_cost_mu": 168.89166666666665,
+      "mean_regret_mu": 79.04166666666667,
+      "mean_fill_rate": 0.5638800817853779
+    },
+    {
+      "policy": "dfl_pto",
+      "mean_cost_mu": 179.67083333333332,
+      "mean_regret_mu": 89.82083333333334,
+      "mean_fill_rate": 0.535682279816086
+    },
+    {
+      "policy": "dfl_dro",
+      "mean_cost_mu": 179.10833333333332,
+      "mean_regret_mu": 89.25833333333333,
+      "mean_fill_rate": 0.5325268562162889
+    },
+    {
+      "policy": "clairvoyant_oracle",
+      "mean_cost_mu": 89.85000000000001,
+      "mean_regret_mu": 0.0,
+      "mean_fill_rate": 0.7371531107867203
+    },
+    {
+      "policy": "supervised_stochastic",
+      "mean_cost_mu": 169.15416666666667,
+      "mean_regret_mu": 79.30416666666666,
+      "mean_fill_rate": 0.5747889692449206
+    },
+    {
+      "policy": "dfl_stochastic",
+      "mean_cost_mu": 180.2875,
+      "mean_regret_mu": 90.4375,
+      "mean_fill_rate": 0.5288529988337147
+    }
+  ]
+}

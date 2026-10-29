@@ -19,7 +19,7 @@ from typing import Any
 
 import numpy as np
 
-from inventory_di.optimization.core import AllocationInstance, evaluate_exact_cost
+from inventory_di.optimization.core import AllocationInstance
 
 
 @dataclass
@@ -66,7 +66,16 @@ class InventoryStateTransitionSystem:
         self.base_inst = base_inst
         self.S = len(base_inst.stores)
         self.P = len(base_inst.skus)
+        if int(lead_time_weeks) != lead_time_weeks or lead_time_weeks < 0:
+            raise ValueError("Lead time must be a nonnegative integer")
         self.lead_time = int(lead_time_weeks)
+        self.validate_units(base_inst.I, "opening inventory")
+        if np.any(base_inst.I.sum(axis=1) > base_inst.C):
+            raise ValueError("Opening store stock exceeds capacity")
+        if initial_pipeline is not None and len(initial_pipeline) != self.lead_time:
+            raise ValueError("Initial pipeline length must equal lead time")
+        for shipment in initial_pipeline or []:
+            self.validate_units(shipment, "pipeline")
 
         # Store on-hand stock
         self.store_on_hand = np.array(base_inst.I, dtype=int, copy=True)
@@ -99,7 +108,17 @@ class InventoryStateTransitionSystem:
             + sum(int(np.sum(p)) for p in self.pipeline)
         )
 
+        self.initial_by_sku = self.store_on_hand.sum(axis=0) + sum(
+            (p.sum(axis=0) for p in self.pipeline), np.zeros(self.P, dtype=int))
+        self.receipts_by_sku = np.zeros(self.P, dtype=int)
+        self.sales_by_sku = np.zeros(self.P, dtype=int)
         self.step_history: list[InventoryStepLog] = []
+
+    def validate_units(self, value, label):
+        arr = np.asarray(value)
+        if arr.shape != (self.S, self.P) or not np.isfinite(arr).all() or (arr < 0).any() or (arr != np.rint(arr)).any():
+            raise ValueError(f"{label} must have shape {(self.S, self.P)} and finite nonnegative integer units")
+        return arr.astype(int)
 
     def get_system_inventory_in_circulation(self) -> int:
         """Calculate total physical inventory currently in the system."""
@@ -115,13 +134,17 @@ class InventoryStateTransitionSystem:
         expected = self.initial_system_inventory + self.external_receipts_cumulative
         actual = current_in_circulation + self.fulfilled_sales_cumulative + self.disposed_units_cumulative
         diff = actual - expected
-        return diff == 0, int(diff)
+        by_sku = self.store_on_hand.sum(axis=0) + self.deferred_arrivals.sum(axis=0) + sum(
+            (p.sum(axis=0) for p in self.pipeline), np.zeros(self.P, dtype=int))
+        sku_ok = np.array_equal(self.initial_by_sku + self.receipts_by_sku, by_sku + self.sales_by_sku)
+        return diff == 0 and sku_ok, int(diff)
 
     def step(
         self,
         order_x: np.ndarray,
         realized_demand_D: np.ndarray,
         period_idx: int,
+        admitted_units: np.ndarray | None = None,
     ) -> InventoryStepLog:
         """Execute one period state transition.
 
@@ -133,8 +156,16 @@ class InventoryStateTransitionSystem:
         5. Update closing stock and compute period costs.
         6. Verify exact system conservation invariant.
         """
-        order_x = np.asarray(order_x, dtype=int)
-        realized_demand_D = np.asarray(realized_demand_D, dtype=int)
+        order_x = self.validate_units(order_x, "order")
+        realized_demand_D = self.validate_units(realized_demand_D, "demand")
+        if (order_x > self.base_inst.K).any() or (order_x.sum(axis=0) > self.base_inst.W).any():
+            raise ValueError("Dispatch exceeds SKU cap or warehouse supply")
+        if admitted_units is not None:
+            admitted_units = self.validate_units(admitted_units, "admissions")
+            due = order_x if self.lead_time == 0 else self.pipeline[0]
+            if (admitted_units > due + self.deferred_arrivals).any() or ((self.store_on_hand + admitted_units).sum(axis=1) > self.base_inst.C).any():
+                raise ValueError("Admissions exceed queued stock or store capacity")
+        self.receipts_by_sku += order_x.sum(axis=0)
 
         # 1. Opening store on-hand
         opening_store = self.store_on_hand.copy()
@@ -186,6 +217,10 @@ class InventoryStateTransitionSystem:
                 # Crucial: Undeliverable units are RETAINED in deferred queue, NEVER destroyed
                 deferred_after[s, :] = attempting_arrival[s, :] - accepted_arrival[s, :]
 
+        if admitted_units is not None:
+            accepted_arrival = admitted_units.copy()
+            deferred_after = attempting_arrival - accepted_arrival
+
         # Update deferred queue
         self.deferred_arrivals = deferred_after
 
@@ -201,22 +236,6 @@ class InventoryStateTransitionSystem:
         self.store_on_hand = closing_store_on_hand
 
         # 4. Cost accounting
-        _ = evaluate_exact_cost(
-            x=accepted_arrival,
-            D=realized_demand_D,
-            inst=AllocationInstance(
-                stores=self.base_inst.stores,
-                skus=self.base_inst.skus,
-                I=opening_store,
-                W=self.base_inst.W,
-                K=self.base_inst.K,
-                C=self.base_inst.C,
-                b=self.base_inst.b,
-                h=self.base_inst.h,
-                t=self.base_inst.t,
-            ),
-        )
-
         period_shortage_cost = float(np.sum(self.base_inst.b * unmet_shortage))
         period_holding_cost = float(np.sum(self.base_inst.h * closing_store_on_hand))
         # Holding cost also applies to deferred stock retained in transit / dock
@@ -226,9 +245,10 @@ class InventoryStateTransitionSystem:
 
         period_demand = int(np.sum(realized_demand_D))
         period_fulfilled = int(np.sum(fulfilled_sales))
-        fill_rate = float(period_fulfilled / max(1, period_demand))
+        fill_rate = float(period_fulfilled / period_demand) if period_demand else 1.0
 
         # Accumulate metrics
+        self.sales_by_sku += fulfilled_sales.sum(axis=0)
         self.fulfilled_sales_cumulative += period_fulfilled
         self.unmet_demand_cumulative += int(np.sum(unmet_shortage))
         self.total_demand_cumulative += period_demand

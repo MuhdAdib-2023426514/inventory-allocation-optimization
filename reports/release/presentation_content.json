@@ -1,0 +1,146 @@
+{
+  "run_ids": {
+    "demo": "demo_v2",
+    "m5": "m5_v2",
+    "m5_intermittent": "m5_intermittent_v2"
+  },
+  "sources": {
+    "artifacts/demo_v2/summary_metrics.parquet": "6b5aa166e0ec8f684eb9fe89cce4b238e9838efd9e13314fd3ecc5d7592fcfd2",
+    "artifacts/m5_v2/summary_metrics.parquet": "08be86d6e63110abcdd8e8aea17b88f61a5a79edf0f953ec0360a1ad7fd6a42c",
+    "artifacts/m5_intermittent_v2/summary_metrics.parquet": "0307044f528473c534a6b5371a41e742a1d05682c768a640b4f685aef4ac1847"
+  },
+  "slides": [
+    {
+      "title": "Inventory allocation: from forecasts to decisions",
+      "subtitle": "Interview research case study | Decision intelligence for multi-store retail",
+      "bullets": [
+        "Decision: how many units should a warehouse send to each store when stock and shelf space are limited?",
+        "Objective: reduce shortage, holding and shipping cost while respecting integer inventory constraints.",
+        "Deliverable: a CPU-based experiment pipeline, mathematical checks and an offline decision dashboard.",
+        "Evidence: Walmart M5 sales proxies with synthetic operating economics; no claim of actual retailer savings."
+      ],
+      "notes": "Open with the business decision rather than model complexity. Explain a scarce unit can be valuable at one store and excess at another. MU means synthetic monetary units. This is an interview research prototype, not an operational replenishment system.",
+      "seconds": 65
+    },
+    {
+      "title": "Data and assumptions define the experiment",
+      "subtitle": "Chronological evaluation and explicit provenance",
+      "bullets": [
+        "Regular and intermittent cohorts: 5 stores and 10 HOUSEHOLD SKUs each, selected using training history only.",
+        "Each origin predicts the next seven calendar days. Main M5 split: 100 training, 8 validation and 12 test origins.",
+        "Features use completed history; calendar events are known in advance. Future realized prices are excluded.",
+        "Stock, supply, capacity and MU costs are synthetic. Observed sales can understate latent demand during stockouts.",
+        "The v2 runs reuse previously inspected test periods: these are corrected retrospective experiments."
+      ],
+      "notes": "Show Page A provenance and actual filters. ADI is daily inverse nonzero-sales frequency; do not claim a threshold absent from the selection rule. Discuss Walmart-to-MR.DIY domain shift. Twelve test weeks support a small case study, not a causal savings estimate.",
+      "seconds": 75
+    },
+    {
+      "title": "Learning and optimization answer different questions",
+      "subtitle": "A distribution feeds the decision; SPO+ supplies training feedback",
+      "flow": [
+        "Pre-origin features",
+        "Calibrated demand PMF",
+        "Marginal costs / joint scenarios",
+        "Integer allocation"
+      ],
+      "feedback": "Training feedback: SPO+ updates the PMF through a fixed feasible optimization template.",
+      "bullets": [
+        "Matched learning: the same architecture, initialization, batches and budget; DFL adds normalized SPO+.",
+        "Probability-reweighting DRO: sum(w)=1 and 0 <= w[j] <= p[j]/(1-alpha). Its worst expected loss equals CVaR.",
+        "Risk-neutral scenario ablations isolate sampling from risk aversion; weight zero is expected-cost optimization."
+      ],
+      "notes": "Define PTO and DFL in plain language. The feasible set is fixed during SPO+ training; uncertain demand maps to objective coefficients. The optimizer participates in learning. This is probability-reweighting DRO, not Wasserstein DRO. Scenario dependence is estimated on training only; PMF temperature is selected on validation.",
+      "seconds": 90
+    },
+    {
+      "title": "Test the decision, not only the forecast",
+      "subtitle": "Shared conditions and independent mathematical checks",
+      "bullets": [
+        "Seven required policies plus two diagnostic ablations use the same origin, stock, supply, capacity and realized target.",
+        "Primary outcomes: held-out cost, hindsight regret and fill rate; forecast error is a diagnostic.",
+        "Three independent seeds use equal budgets and their own validation calibration and risk selection.",
+        "Paired moving-block intervals resample time origins. Small samples and few tail weeks limit certainty.",
+        "Carryover extension: explicit dispatch, admissions and deferred inventory; the hindsight MILP is replayed and tested against exhaustive tiny cases."
+      ],
+      "notes": "The oracle knows future demand only for evaluation and never supplies a realistic recommendation. Explain why conserving total stock alone was insufficient and why matching the state/action contract matters. Show mathematical tests if asked. Negative or inconclusive model results are retained.",
+      "seconds": 80
+    },
+    {
+      "title": "The strongest method depends on the setting",
+      "subtitle": "Primary seed 42: mean test-origin cost (synthetic MU; lower is better)",
+      "table_headers": [
+        "Policy",
+        "Regular M5",
+        "Intermittent M5"
+      ],
+      "table": [
+        [
+          "Equal allocation",
+          "1432.35",
+          "174.45"
+        ],
+        [
+          "Proportional allocation",
+          "1298.91",
+          "176.94"
+        ],
+        [
+          "Supervised PTO",
+          "1311.54",
+          "169.94"
+        ],
+        [
+          "Supervised DRO",
+          "1320.18",
+          "168.89"
+        ],
+        [
+          "DFL PTO",
+          "1305.72",
+          "179.67"
+        ],
+        [
+          "DFL + DRO",
+          "1311.75",
+          "179.11"
+        ]
+      ],
+      "bullets": [
+        "Primary-seed non-oracle policies: regular winner proportional_allocation (1298.91 MU); intermittent winner supervised_dro (168.89 MU).",
+        "Regular DFL+DRO minus supervised PTO: +0.20 MU; paired 95% band [-15.71, 10.66] MU.",
+        "Primary-seed rankings vary across seeds and objectives. Full seed results are retained; universal superiority is not established."
+      ],
+      "notes": "Read the table candidly, including heuristic wins and losses by advanced methods. The two stochastic ablations and oracle are available in the full report. Explain a negative paired difference favors DFL+DRO; an interval crossing zero is inconclusive on this sample. These costs are modelled outcomes, not revenue or proven operational savings.",
+      "seconds": 90
+    },
+    {
+      "title": "A decision tool makes the trade-off visible",
+      "subtitle": "60-second local demonstration; cached models, fresh optimization",
+      "bullets": [
+        "Page A: identify the M5-proxy badge, synthetic MU economics and chronological data split.",
+        "Page C: inspect integer shipments, available supply, store capacity and expected shortage/excess.",
+        "Page D: compare model expected cost, model CVaR and realized historical test cost as separate metrics.",
+        "Change supply to 0.8 or demand uplift to +25%. Uplift is explicitly a synthetic intervention.",
+        "Hard service mode meets a feasible target or separately establishes maximum achievable service. Soft mode permits a cost trade-off.",
+        "Page E: show paired results and the baseline winner. Download CSVs; no training runs inside the UI."
+      ],
+      "notes": "Leave the dashboard running before the interview. Use one controlled change, then return to defaults. Do not promise a latency threshold: actual solver and pipeline timings are in the artifacts. If the browser fails, use the local PDF or HTML and screenshots; do not rebuild models during the interview.",
+      "seconds": 70
+    },
+    {
+      "title": "Recommendation: validate before an operational pilot",
+      "subtitle": "A defensible result includes its limitations",
+      "bullets": [
+        "Choose policy using the business objective and validation evidence; do not assume the most complex model wins.",
+        "Limitations: sales censoring, synthetic economics, small selected cohorts, short test horizon and domain shift.",
+        "Retrospective reruns do not create a fresh confirmatory holdout. Future evidence should include untouched periods.",
+        "Next: obtain real stock and lead-time records, validate costs and case packs, then run a monitored planner-in-the-loop pilot.",
+        "Demonstrated: a tested research workflow and offline prototype. Enterprise-wide scale and actual savings remain to be established."
+      ],
+      "notes": "Close with a measured proposal. Describe the data needed from an ERP and warehouse system and how to compare against the incumbent policy. Keep humans responsible for orders. Invite questions about calibration, solver feasibility, simple baselines and why robust optimization can cost more.",
+      "seconds": 70
+    }
+  ],
+  "total_seconds": 540
+}

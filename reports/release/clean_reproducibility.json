@@ -1,0 +1,9 @@
+{
+  "costs_allocations_deterministic_fields_match": true,
+  "checkpoint_hash_match": {
+    "supervised_models.pt": true,
+    "dfl_models.pt": true
+  },
+  "scope": "Final installed wheel outside checkout versus same-seed/config checkout quick run; runtime excluded",
+  "installed_source_files": 30
+}

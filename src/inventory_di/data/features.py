@@ -62,7 +62,7 @@ def compute_weekly_features_strictly_pre_origin(raw_weekly: pd.DataFrame) -> pd.
         g["week_of_year_cos"] = np.cos(2.0 * math.pi * iso_week / 52.0)
 
         # Price known at or before forecast_origin (lagged by 1 week if not scheduled)
-        g["lag_price_mu"] = g["price_at_origin_mu"].shift(1).bfill().astype(float)
+        g["lag_price_mu"] = g["price_at_origin_mu"].shift(1).fillna(1.0).astype(float)
         # Max feature date is strictly <= forecast_origin
         g["max_feature_date"] = g["forecast_origin"]
         records.append(g)

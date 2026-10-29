@@ -85,6 +85,7 @@ class ExperimentConfig(BaseModel):
     model: ModelConfig
     dro: DROConfig
     evaluation: EvaluationConfig
+    profile: Literal["standard", "quick"] = "standard"
     config_path: str = ""
     config_sha256: str = ""
 
@@ -109,6 +110,10 @@ def load_config(path: str | Path, quick: bool = False) -> ExperimentConfig:
     cfg.config_path = str(cfg_path)
     cfg.config_sha256 = sha256
     if quick:
+        cfg.profile = "quick"
+        cfg.run_id += "_quick"
+        for field in ("processed_dir", "artifacts_dir", "reports_dir"):
+            setattr(cfg.data, field, getattr(cfg.data, field) + "_quick")
         cfg.model.epochs = min(cfg.model.epochs, 12)
         cfg.dro.num_scenarios = min(cfg.dro.num_scenarios, 25)
         cfg.evaluation.bootstrap_resamples = min(cfg.evaluation.bootstrap_resamples, 50)

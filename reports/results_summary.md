@@ -1,7 +1,7 @@
 # Inventory Allocation Experiment Results Summary
 
 - **Data Provenance / Mode:** M5 Sales Proxy + Simulated Inventory (`data_mode='m5_sales_proxy'`) (Demand Regime: `regular`)
-- **Run ID:** `m5_v1` (Global Seed: `42`, Git Commit: `3260515`)
+- **Run ID:** `m5_v1` (Global Seed: `42`, Git Commit: `6097fa2`)
 - **Economic Units:** Generic Monetary Units (`MU`), synthetic inventory/operating constraints (`data_provenance='synthetic'`).
 - **Held-out Test Origins:** `12` chronological weekly origins.
 - **Lowest Mean Out-of-Sample Cost Policy (Non-Oracle):** `proportional_allocation` (**1298.91 MU**, Fill Rate **73.9%**, Mean Oracle Regret **278.76 MU**).

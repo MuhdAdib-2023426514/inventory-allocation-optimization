@@ -1,0 +1,32 @@
+[
+  {
+    "script": ".agents/skills/optimization-verification/scripts/verify_optimization.py",
+    "exit_code": 0,
+    "output": "{\n  \"skill\": \"optimization-verification\",\n  \"status\": \"PASS\",\n  \"checks_run\": [\n    \"toy_oracle_2_stores\",\n    \"marginal_unit_cost_identity_25_random_instances\",\n    \"cvar_reweighting_lp_equivalence_and_limiting_cases\",\n    \"negative_warehouse_overshipment_detection\",\n    \"negative_regret_and_solver_status_detection\"\n  ],\n  \"errors\": []\n}\n",
+    "stderr": ""
+  },
+  {
+    "script": ".agents/skills/decision-focused-learning/scripts/verify_dfl_contract.py",
+    "exit_code": 0,
+    "output": "{\n  \"skill\": \"decision-focused-learning\",\n  \"status\": \"PASS\",\n  \"optional_runtime_dependencies\": {\n    \"torch\": true,\n    \"pyepo\": true,\n    \"pyomo\": true,\n    \"highspy\": true\n  },\n  \"checks_run\": [\n    \"pmf_normalization_and_overflow_bin\",\n    \"survival_and_marginal_cost_monotonicity\",\n    \"fixed_feasible_set_invariance\",\n    \"spo_plus_loss_and_subgradient_verification\",\n    \"negative_variable_rhs_and_inactive_spo_detection\"\n  ],\n  \"errors\": []\n}\n",
+    "stderr": ""
+  },
+  {
+    "script": ".agents/skills/data-leakage-audit/scripts/audit_leakage.py",
+    "exit_code": 0,
+    "output": "{\n  \"skill\": \"data-leakage-audit\",\n  \"status\": \"PASS\",\n  \"checks_run\": [\n    \"valid_chronological_lineage_manifest\",\n    \"negative_feature_and_copula_leakage_detection\",\n    \"negative_test_calibration_and_demand_clipping_detection\",\n    \"negative_same_origin_mixed_split_detection\"\n  ],\n  \"errors\": []\n}\n",
+    "stderr": ""
+  },
+  {
+    "script": ".agents/skills/dashboard-qa/scripts/verify_dashboard_qa.py",
+    "exit_code": 0,
+    "output": "{\n  \"skill\": \"dashboard-qa\",\n  \"status\": \"PASS\",\n  \"streamlit_app_exists\": true,\n  \"checks_run\": [\n    \"five_page_structure_and_provenance_badge\",\n    \"page_b_calibration_warning_gate\",\n    \"page_d_cost_cvar_realized_separation_and_ambiguity_label\",\n    \"offline_and_no_ui_retrain_gates\",\n    \"negative_mislabeling_and_conflation_detection\"\n  ],\n  \"errors\": []\n}\n",
+    "stderr": ""
+  },
+  {
+    "script": ".agents/skills/experiment-reproducibility/scripts/verify_reproducibility.py",
+    "exit_code": 0,
+    "output": "{\n  \"skill\": \"experiment-reproducibility\",\n  \"status\": \"PASS\",\n  \"environment\": {\n    \"python_version\": \"3.12.14\",\n    \"platform\": \"macOS-26.2-arm64-arm-64bit\",\n    \"packages_installed\": {\n      \"numpy\": true,\n      \"pandas\": true,\n      \"pyarrow\": true,\n      \"scikit-learn\": true,\n      \"torch\": true,\n      \"pyepo\": true,\n      \"pyomo\": true,\n      \"highspy\": true,\n      \"scipy\": true,\n      \"plotly\": true,\n      \"streamlit\": true,\n      \"pydantic\": true,\n      \"pytest\": true,\n      \"yaml\": true\n    }\n  },\n  \"checks_run\": [\n    \"valid_demo_run_manifest\",\n    \"negative_fake_m5_and_currency_detection\",\n    \"negative_bootstrap_unit_detection\",\n    \"negative_policy_environment_mismatch_detection\"\n  ],\n  \"errors\": []\n}\n",
+    "stderr": ""
+  }
+]

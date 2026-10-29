@@ -1,0 +1,137 @@
+{
+  "external_http_blocked": true,
+  "external_attempts": [],
+  "page_errors": [],
+  "console_errors": [],
+  "pages": [
+    {
+      "mode": "demo",
+      "page": "Page A \u2014 Problem & Data",
+      "seconds": 0.403825291999965
+    },
+    {
+      "mode": "demo",
+      "page": "Page B \u2014 Models & Diagnostics",
+      "seconds": 0.5113690830003179
+    },
+    {
+      "mode": "demo",
+      "page": "Page C \u2014 Allocation Results",
+      "seconds": 0.5106528330006768
+    },
+    {
+      "mode": "demo",
+      "page": "Page D \u2014 Risk & Robustness",
+      "seconds": 0.4480447500000082
+    },
+    {
+      "mode": "demo",
+      "page": "Page E \u2014 Evidence & Business Impact",
+      "seconds": 0.6269912090001526
+    },
+    {
+      "mode": "m5",
+      "page": "Page A \u2014 Problem & Data",
+      "seconds": 0.4092339589997209
+    },
+    {
+      "mode": "m5",
+      "page": "Page B \u2014 Models & Diagnostics",
+      "seconds": 0.3992625830005636
+    },
+    {
+      "mode": "m5",
+      "page": "Page C \u2014 Allocation Results",
+      "seconds": 0.4715473750002275
+    },
+    {
+      "mode": "m5",
+      "page": "Page D \u2014 Risk & Robustness",
+      "seconds": 0.9582940000000235
+    },
+    {
+      "mode": "m5",
+      "page": "Page E \u2014 Evidence & Business Impact",
+      "seconds": 0.40830291699967347
+    },
+    {
+      "mode": "m5_intermittent",
+      "page": "Page A \u2014 Problem & Data",
+      "seconds": 0.4110338339996815
+    },
+    {
+      "mode": "m5_intermittent",
+      "page": "Page B \u2014 Models & Diagnostics",
+      "seconds": 0.39986399999997957
+    },
+    {
+      "mode": "m5_intermittent",
+      "page": "Page C \u2014 Allocation Results",
+      "seconds": 0.46152674999939336
+    },
+    {
+      "mode": "m5_intermittent",
+      "page": "Page D \u2014 Risk & Robustness",
+      "seconds": 0.5496015830003671
+    },
+    {
+      "mode": "m5_intermittent",
+      "page": "Page E \u2014 Evidence & Business Impact",
+      "seconds": 0.4207650000007561
+    }
+  ],
+  "controls": [
+    {
+      "mode": "demo",
+      "control": "Tail Ambiguity Parameter (alpha)",
+      "action": "minimum"
+    },
+    {
+      "mode": "demo",
+      "control": "Tail Risk Weight (risk_weight)",
+      "action": "minimum"
+    },
+    {
+      "mode": "demo",
+      "control": "Warehouse Supply Scarcity Multiplier",
+      "action": "minimum"
+    },
+    {
+      "mode": "m5",
+      "control": "Tail Ambiguity Parameter (alpha)",
+      "action": "minimum"
+    },
+    {
+      "mode": "m5",
+      "control": "Tail Risk Weight (risk_weight)",
+      "action": "minimum"
+    },
+    {
+      "mode": "m5",
+      "control": "Warehouse Supply Scarcity Multiplier",
+      "action": "minimum"
+    },
+    {
+      "mode": "m5_intermittent",
+      "control": "Tail Ambiguity Parameter (alpha)",
+      "action": "minimum"
+    },
+    {
+      "mode": "m5_intermittent",
+      "control": "Tail Risk Weight (risk_weight)",
+      "action": "minimum"
+    },
+    {
+      "mode": "m5_intermittent",
+      "control": "Warehouse Supply Scarcity Multiplier",
+      "action": "minimum"
+    }
+  ],
+  "downloads": [
+    "reports/release/browser/demo_allocations.csv",
+    "reports/release/browser/m5_allocations.csv",
+    "reports/release/browser/m5_intermittent_allocations.csv"
+  ],
+  "slides_fit": true,
+  "status": "PASS"
+}

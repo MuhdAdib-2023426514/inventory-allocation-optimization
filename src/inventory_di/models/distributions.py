@@ -67,6 +67,7 @@ def compute_survival_and_marginal_costs_torch(
     b_s: list[float] | np.ndarray,
     h_s: list[float] | np.ndarray,
     t_s: list[float] | np.ndarray,
+    tail_mean_excess: float = 2.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Differentiably map store PMFs `(batch, S, H + 2)` to survival probabilities `q[s, k]`
     and predicted marginal unit costs `c_hat[s, k] = t_s + h_s - (b_s + h_s) * q[s, k]` (`AGENTS.md` §6).
@@ -95,7 +96,7 @@ def compute_survival_and_marginal_costs_torch(
             else:
                 # If threshold exceeds H + 1, decay overflow probability geometrically
                 excess_steps = thresh - (H + 1)
-                q_sk = pmf[:, s, -1] * (0.5**excess_steps)
+                q_sk = pmf[:, s, -1] * ((1.0 - 1.0 / max(1.0, tail_mean_excess)) ** excess_steps)
             q_sk = torch.clamp(q_sk, min=0.0, max=1.0)
             c_sk = (t_val + h_val) - (b_val + h_val) * q_sk
             q_list.append(q_sk)
@@ -141,7 +142,9 @@ def calibrate_temperature_on_validation(
     for cand in np.linspace(0.5, 2.5, 41):
         with torch.no_grad():
             nll_cand = float(
-                compute_discrete_nll_loss(logits, val_d, model.support_h, temperature=float(cand)).item()
+                compute_discrete_nll_loss(
+                    logits, val_d, model.support_h, temperature=float(cand)
+                ).item()
             )
         if nll_cand < best_nll:
             best_nll = nll_cand
@@ -167,15 +170,15 @@ def pmf_moments_and_quantiles(
     support_vals[-1] = float(H + max(1.0, tail_mean_excess))
 
     expected = np.sum(pmf_np * support_vals.reshape(1, -1), axis=-1)
-    cdf = np.cumsum(pmf_np, axis=-1)
 
-    p10 = np.zeros(S, dtype=float)
-    p50 = np.zeros(S, dtype=float)
-    p90 = np.zeros(S, dtype=float)
-    for s in range(S):
-        p10[s] = float(support_vals[int(np.searchsorted(cdf[s], 0.10, side="left"))])
-        p50[s] = float(support_vals[int(np.searchsorted(cdf[s], 0.50, side="left"))])
-        p90[s] = float(support_vals[int(np.searchsorted(cdf[s], 0.90, side="left"))])
+    quantiles = [
+        np.array(
+            [inverse_demand_cdf(pmf_np[s], np.array([q]), tail_mean_excess)[0] for s in range(S)],
+            dtype=float,
+        )
+        for q in (0.10, 0.50, 0.90)
+    ]
+    p10, p50, p90 = quantiles
 
     return {
         "expected": expected,
@@ -186,13 +189,45 @@ def pmf_moments_and_quantiles(
     }
 
 
+def inverse_demand_cdf(pmf, uniforms, tail_mean_excess=2.0):
+    """Inverse CDF of 0..H plus shifted-geometric overflow, including tail quantiles."""
+    p = np.asarray(pmf, dtype=float)
+    if (
+        p.ndim != 1
+        or len(p) < 3
+        or not np.isfinite(p).all()
+        or (p < 0).any()
+        or not np.isclose(p.sum(), 1, atol=1e-5)
+    ):
+        raise ValueError("Invalid discrete demand PMF")
+    p = p / p.sum()
+    u = np.asarray(uniforms, dtype=float)
+    if ((u < 0) | (u >= 1)).any():
+        raise ValueError("CDF uniforms must be in [0,1)")
+    cdf = np.cumsum(p)
+    cdf[-1] = 1.0
+    bins = np.searchsorted(cdf, u, side="left")
+    H = len(p) - 2
+    tail = bins > H
+    if tail.any():
+        conditional = np.clip((u[tail] - cdf[-2]) / p[-1], 0, 1 - 1e-14)
+        mean = max(1.0, float(tail_mean_excess))
+        excess = (
+            np.ones(tail.sum(), dtype=int)
+            if mean == 1
+            else np.maximum(1, np.ceil(np.log1p(-conditional) / np.log1p(-1.0 / mean)).astype(int))
+        )
+        bins[tail] = H + excess
+    return bins.astype(int)
+
+
 class EmpiricalCopulaScenarioGenerator:
     """Training-only empirical rank-bootstrap / copula scenario generator (`AGENTS.md` §7).
 
     Fits cross-(store, SKU) historical weekly demand rank uniforms exclusively on `split == 'train'`.
     At evaluation time, samples `N` joint uniform vectors using a deterministic seed per origin
     (so all policies share common random numbers) and maps them through each store-SKU's predicted
-    inverse CDF (with shifted Poisson/geometric tail draw when `u` lands in the `overflow > H` bin).
+    inverse CDF (with shifted geometric tail inverse CDF when `u` lands in the `overflow > H` bin).
     """
 
     def __init__(
@@ -213,7 +248,9 @@ class EmpiricalCopulaScenarioGenerator:
     def fit_on_train(self, train_weekly_df: Any) -> dict[str, Any]:
         """Estimate empirical rank uniforms across (store, SKU) on `split == 'train'` only."""
         if (train_weekly_df["split"] != "train").any():
-            raise ValueError("EmpiricalCopulaScenarioGenerator.fit_on_train received non-train rows!")
+            raise ValueError(
+                "EmpiricalCopulaScenarioGenerator.fit_on_train received non-train rows!"
+            )
 
         origins = sorted(train_weekly_df["forecast_origin"].unique())
         S, P = len(self.stores), len(self.skus)
@@ -235,10 +272,13 @@ class EmpiricalCopulaScenarioGenerator:
 
         # Convert each (s, p) time series across training weeks into empirical rank uniforms in (0, 1)
         ranks = np.zeros_like(mat)
+        tie_rng = np.random.default_rng(1729)
         for s in range(S):
             for p in range(P):
                 series = mat[:, s, p]
-                order = np.argsort(np.argsort(series, kind="mergesort"), kind="mergesort")
+                sorted_indices = np.lexsort((tie_rng.random(T), series))
+                order = np.empty(T, dtype=int)
+                order[sorted_indices] = np.arange(T)
                 ranks[:, s, p] = (order + 0.5) / float(T)
 
         self.rank_matrix_train = ranks
@@ -254,7 +294,6 @@ class EmpiricalCopulaScenarioGenerator:
         rng = np.random.default_rng(seed)
         S, P = len(self.stores), len(self.skus)
         N = int(num_scenarios)
-        H = self.support_h
 
         # Generate dependent uniforms U of shape (N, S, P)
         if self.rank_matrix_train is not None and len(self.rank_matrix_train) >= 4:
@@ -269,26 +308,10 @@ class EmpiricalCopulaScenarioGenerator:
 
         scenarios = np.zeros((N, S, P), dtype=int)
         for p_idx, sku in enumerate(self.skus):
-            pmf = np.asarray(pmf_by_sku[sku], dtype=float)  # shape (S, H + 2)
-            cdf = np.cumsum(pmf, axis=-1)
             for s_idx in range(S):
-                cdf_s = cdf[s_idx]
-                cdf_s[-1] = 1.0
-                u_vec = U[:, s_idx, p_idx]
-                bins = np.searchsorted(cdf_s, u_vec, side="left")
-                for n_idx, b_val in enumerate(bins):
-                    if b_val <= H:
-                        scenarios[n_idx, s_idx, p_idx] = int(b_val)
-                    else:
-                        # Overflow bin > H: sample excess >= 1 from training-estimated tail mean
-                        excess = 1 + int(rng.poisson(max(0.5, self.tail_mean_excess - 1.0)))
-                        scenarios[n_idx, s_idx, p_idx] = int(H + excess)
-
-        if self.val_scale_factors is not None:
-            scaled = np.rint(
-                scenarios.astype(float) * self.val_scale_factors.reshape(1, S, P)
-            ).astype(int)
-            scenarios = np.maximum(0, scaled)
+                scenarios[:, s_idx, p_idx] = inverse_demand_cdf(
+                    pmf_by_sku[sku][s_idx], U[:, s_idx, p_idx], self.tail_mean_excess
+                )
 
         return scenarios
 
@@ -322,16 +345,9 @@ class EmpiricalCopulaScenarioGenerator:
         val_real_arr = np.stack(val_realized_list, axis=0).astype(float)  # (T_val, S, P)
         raw_scen_arr = np.stack(raw_scen_list, axis=0).astype(float)  # (T_val, N, S, P)
 
-        raw_mean_per_sp = np.mean(raw_scen_arr, axis=(0, 1))  # (S, P)
-        real_mean_per_sp = np.mean(val_real_arr, axis=0)  # (S, P)
-
-        # Fit bounded multiplicative scale factor in [0.45, 1.25] on validation split only
-        ratio = np.where(
-            raw_mean_per_sp > 0.5,
-            (real_mean_per_sp + 0.5) / (raw_mean_per_sp + 0.5),
-            1.0,
-        )
-        self.val_scale_factors = np.clip(ratio, 0.45, 1.25)
+        # PMF temperature calibration is performed upstream on validation only.
+        # Preserve those same marginals for PTO and DRO; no scenario-only scaling.
+        self.val_scale_factors = np.ones(val_real_arr.shape[1:])
 
         cal_scen_list: list[np.ndarray] = []
         for t_i in range(T_val):
@@ -365,6 +381,7 @@ class EmpiricalCopulaScenarioGenerator:
 
         diag = {
             "calibrated_on_split": "val",
+            "scenario_transform": "none; upstream PMF temperature only",
             "num_val_origins": T_val,
             "raw_scenario_mean_bias_units": raw_bias,
             "calibrated_scenario_mean_bias_units": cal_bias,

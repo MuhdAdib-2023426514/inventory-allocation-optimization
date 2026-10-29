@@ -1,0 +1,344 @@
+{
+  "review_date": "2026-10-29",
+  "scope": "Independent checks on saved single-period artifacts; no retraining or carryover rerun",
+  "results": {
+    "demo": {
+      "policy_origin_allocations_checked": 56,
+      "cost_or_feasibility_errors": [],
+      "hash_checks": {
+        "artifacts/demo/allocation_results.parquet": true,
+        "artifacts/demo/backtest_metrics.parquet": true,
+        "artifacts/demo/risk_sensitivity.parquet": true,
+        "artifacts/demo/summary_metrics.parquet": true,
+        "artifacts/demo/multi_seed_summary.parquet": true,
+        "artifacts/demo/carryover_leadtime_metrics.parquet": true,
+        "artifacts/demo/cost_risk_service_frontier.parquet": true,
+        "artifacts/demo/supervised_models.pt": true,
+        "artifacts/demo/dfl_models.pt": true,
+        "data/demo/weekly_demand.parquet": true,
+        "data/demo/inventory_config.parquet": true
+      },
+      "summary_max_numeric_discrepancy": 0.0,
+      "min_regret_mu": 0.0,
+      "paired_cost_differences": {
+        "dfl_pto minus supervised_pto": {
+          "mean_delta_mu": -0.04999999999999938,
+          "ci95_mu": [
+            -2.7749999999999986,
+            2.643749999999999
+          ],
+          "bootstrap_resamples": 2000,
+          "block_size": 2
+        },
+        "dfl_dro minus supervised_pto": {
+          "mean_delta_mu": 3.6687499999999984,
+          "ci95_mu": [
+            -3.74375,
+            12.943749999999998
+          ],
+          "bootstrap_resamples": 2000,
+          "block_size": 2
+        },
+        "dfl_pto minus proportional_allocation": {
+          "mean_delta_mu": -0.8437500000000004,
+          "ci95_mu": [
+            -9.162500000000009,
+            3.8695312499999983
+          ],
+          "bootstrap_resamples": 2000,
+          "block_size": 2
+        }
+      },
+      "recorded_mean_runtime_seconds": {
+        "equal_allocation": 0.00010448412513142102,
+        "proportional_allocation": 0.00010327587551728357,
+        "supervised_pto": 0.006323411374978605,
+        "supervised_dro": 0.017188999874633737,
+        "dfl_pto": 0.005944229125816491,
+        "dfl_dro": 0.01364565637504711,
+        "clairvoyant_oracle": 0.0008237759998337424
+      }
+    },
+    "m5": {
+      "policy_origin_allocations_checked": 84,
+      "cost_or_feasibility_errors": [],
+      "hash_checks": {
+        "artifacts/m5/allocation_results.parquet": true,
+        "artifacts/m5/backtest_metrics.parquet": true,
+        "artifacts/m5/risk_sensitivity.parquet": true,
+        "artifacts/m5/summary_metrics.parquet": true,
+        "artifacts/m5/multi_seed_summary.parquet": true,
+        "artifacts/m5/carryover_leadtime_metrics.parquet": true,
+        "artifacts/m5/cost_risk_service_frontier.parquet": true,
+        "artifacts/m5/supervised_models.pt": true,
+        "artifacts/m5/dfl_models.pt": true,
+        "data/processed/m5/weekly_demand.parquet": true,
+        "data/processed/m5/inventory_config.parquet": true
+      },
+      "summary_max_numeric_discrepancy": 0.0,
+      "min_regret_mu": 0.0,
+      "paired_cost_differences": {
+        "dfl_pto minus supervised_pto": {
+          "mean_delta_mu": -10.058333333333414,
+          "ci95_mu": [
+            -19.18875000000013,
+            0.48468749999993266
+          ],
+          "bootstrap_resamples": 2000,
+          "block_size": 2
+        },
+        "dfl_dro minus supervised_pto": {
+          "mean_delta_mu": 5.870833333333223,
+          "ci95_mu": [
+            -15.99489583333351,
+            29.60270833333323
+          ],
+          "bootstrap_resamples": 2000,
+          "block_size": 2
+        },
+        "dfl_pto minus proportional_allocation": {
+          "mean_delta_mu": 13.791666666666686,
+          "ci95_mu": [
+            -10.136249999999922,
+            49.334374999999945
+          ],
+          "bootstrap_resamples": 2000,
+          "block_size": 2
+        }
+      },
+      "recorded_mean_runtime_seconds": {
+        "equal_allocation": 0.00048537841697301093,
+        "proportional_allocation": 0.0004095035007291396,
+        "supervised_pto": 0.02822369791586728,
+        "supervised_dro": 0.28994277791631856,
+        "dfl_pto": 0.029847861000841174,
+        "dfl_dro": 0.15608759024992955,
+        "clairvoyant_oracle": 0.006706854082646411
+      }
+    },
+    "m5_intermittent": {
+      "policy_origin_allocations_checked": 84,
+      "cost_or_feasibility_errors": [],
+      "hash_checks": {
+        "artifacts/m5_intermittent/allocation_results.parquet": true,
+        "artifacts/m5_intermittent/backtest_metrics.parquet": true,
+        "artifacts/m5_intermittent/risk_sensitivity.parquet": true,
+        "artifacts/m5_intermittent/summary_metrics.parquet": true,
+        "artifacts/m5_intermittent/multi_seed_summary.parquet": true,
+        "artifacts/m5_intermittent/carryover_leadtime_metrics.parquet": true,
+        "artifacts/m5_intermittent/cost_risk_service_frontier.parquet": true,
+        "artifacts/m5_intermittent/supervised_models.pt": true,
+        "artifacts/m5_intermittent/dfl_models.pt": true,
+        "data/processed/m5_intermittent/weekly_demand.parquet": true,
+        "data/processed/m5_intermittent/inventory_config.parquet": true
+      },
+      "summary_max_numeric_discrepancy": 0.0,
+      "min_regret_mu": 0.0,
+      "paired_cost_differences": {
+        "dfl_pto minus supervised_pto": {
+          "mean_delta_mu": 2.7333333333333396,
+          "ci95_mu": [
+            -1.7169791666666614,
+            9.408645833333338
+          ],
+          "bootstrap_resamples": 2000,
+          "block_size": 2
+        },
+        "dfl_dro minus supervised_pto": {
+          "mean_delta_mu": -0.2958333333333207,
+          "ci95_mu": [
+            -4.034166666666662,
+            4.125937500000013
+          ],
+          "bootstrap_resamples": 2000,
+          "block_size": 2
+        },
+        "dfl_pto minus proportional_allocation": {
+          "mean_delta_mu": -1.3208333333333282,
+          "ci95_mu": [
+            -7.346145833333321,
+            7.816979166666675
+          ],
+          "bootstrap_resamples": 2000,
+          "block_size": 2
+        }
+      },
+      "recorded_mean_runtime_seconds": {
+        "equal_allocation": 9.018400032800855e-05,
+        "proportional_allocation": 0.00020190974949703863,
+        "supervised_pto": 0.005602309083769796,
+        "supervised_dro": 0.21858867333291224,
+        "dfl_pto": 0.005423402583498198,
+        "dfl_dro": 0.09384654516604012,
+        "clairvoyant_oracle": 0.0066560730004615225
+      }
+    }
+  },
+  "post_change_apptest": [
+    {
+      "mode": "Demo Mode (DEMO / SYNTHETIC)",
+      "page": "Page A \u2014 Problem & Data",
+      "exceptions": []
+    },
+    {
+      "mode": "Demo Mode (DEMO / SYNTHETIC)",
+      "page": "Page B \u2014 Models & Diagnostics",
+      "exceptions": []
+    },
+    {
+      "mode": "Demo Mode (DEMO / SYNTHETIC)",
+      "page": "Page C \u2014 Allocation Results",
+      "exceptions": []
+    },
+    {
+      "mode": "Demo Mode (DEMO / SYNTHETIC)",
+      "page": "Page D \u2014 Risk & Robustness",
+      "exceptions": []
+    },
+    {
+      "mode": "Demo Mode (DEMO / SYNTHETIC)",
+      "page": "Page E \u2014 Evidence & Business Impact",
+      "exceptions": []
+    },
+    {
+      "mode": "Demo Mode (DEMO / SYNTHETIC)",
+      "control": "page_d_promo_lift",
+      "value": 25,
+      "exceptions": []
+    },
+    {
+      "mode": "Demo Mode (DEMO / SYNTHETIC)",
+      "control": "page_d_supply",
+      "value": 0.6,
+      "exceptions": []
+    },
+    {
+      "mode": "Demo Mode (DEMO / SYNTHETIC)",
+      "control": "page_d_open_stock",
+      "value": 5,
+      "exceptions": []
+    },
+    {
+      "mode": "Demo Mode (DEMO / SYNTHETIC)",
+      "control": "page_d_alpha",
+      "value": 0.0,
+      "exceptions": []
+    },
+    {
+      "mode": "Demo Mode (DEMO / SYNTHETIC)",
+      "control": "page_d_rw",
+      "value": 0.0,
+      "exceptions": []
+    },
+    {
+      "mode": "M5 Mode (M5 Sales Proxy)",
+      "page": "Page A \u2014 Problem & Data",
+      "exceptions": []
+    },
+    {
+      "mode": "M5 Mode (M5 Sales Proxy)",
+      "page": "Page B \u2014 Models & Diagnostics",
+      "exceptions": []
+    },
+    {
+      "mode": "M5 Mode (M5 Sales Proxy)",
+      "page": "Page C \u2014 Allocation Results",
+      "exceptions": []
+    },
+    {
+      "mode": "M5 Mode (M5 Sales Proxy)",
+      "page": "Page D \u2014 Risk & Robustness",
+      "exceptions": []
+    },
+    {
+      "mode": "M5 Mode (M5 Sales Proxy)",
+      "page": "Page E \u2014 Evidence & Business Impact",
+      "exceptions": []
+    },
+    {
+      "mode": "M5 Mode (M5 Sales Proxy)",
+      "control": "page_d_promo_lift",
+      "value": 25,
+      "exceptions": []
+    },
+    {
+      "mode": "M5 Mode (M5 Sales Proxy)",
+      "control": "page_d_supply",
+      "value": 0.6,
+      "exceptions": []
+    },
+    {
+      "mode": "M5 Mode (M5 Sales Proxy)",
+      "control": "page_d_open_stock",
+      "value": 5,
+      "exceptions": []
+    },
+    {
+      "mode": "M5 Mode (M5 Sales Proxy)",
+      "control": "page_d_alpha",
+      "value": 0.0,
+      "exceptions": []
+    },
+    {
+      "mode": "M5 Mode (M5 Sales Proxy)",
+      "control": "page_d_rw",
+      "value": 0.0,
+      "exceptions": []
+    },
+    {
+      "mode": "M5 Intermittent Mode (Lumpy/Intermittent SKUs)",
+      "page": "Page A \u2014 Problem & Data",
+      "exceptions": []
+    },
+    {
+      "mode": "M5 Intermittent Mode (Lumpy/Intermittent SKUs)",
+      "page": "Page B \u2014 Models & Diagnostics",
+      "exceptions": []
+    },
+    {
+      "mode": "M5 Intermittent Mode (Lumpy/Intermittent SKUs)",
+      "page": "Page C \u2014 Allocation Results",
+      "exceptions": []
+    },
+    {
+      "mode": "M5 Intermittent Mode (Lumpy/Intermittent SKUs)",
+      "page": "Page D \u2014 Risk & Robustness",
+      "exceptions": []
+    },
+    {
+      "mode": "M5 Intermittent Mode (Lumpy/Intermittent SKUs)",
+      "page": "Page E \u2014 Evidence & Business Impact",
+      "exceptions": []
+    },
+    {
+      "mode": "M5 Intermittent Mode (Lumpy/Intermittent SKUs)",
+      "control": "page_d_promo_lift",
+      "value": 25,
+      "exceptions": []
+    },
+    {
+      "mode": "M5 Intermittent Mode (Lumpy/Intermittent SKUs)",
+      "control": "page_d_supply",
+      "value": 0.6,
+      "exceptions": []
+    },
+    {
+      "mode": "M5 Intermittent Mode (Lumpy/Intermittent SKUs)",
+      "control": "page_d_open_stock",
+      "value": 5,
+      "exceptions": []
+    },
+    {
+      "mode": "M5 Intermittent Mode (Lumpy/Intermittent SKUs)",
+      "control": "page_d_alpha",
+      "value": 0.0,
+      "exceptions": []
+    },
+    {
+      "mode": "M5 Intermittent Mode (Lumpy/Intermittent SKUs)",
+      "control": "page_d_rw",
+      "value": 0.0,
+      "exceptions": []
+    }
+  ]
+}

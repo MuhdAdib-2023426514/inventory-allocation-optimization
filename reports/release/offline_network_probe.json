@@ -1,0 +1,14 @@
+{
+  "loopback": {
+    "success": true,
+    "status": 200
+  },
+  "external": {
+    "success": false,
+    "error": "<urlopen error [Errno 8] nodename nor servname provided, or not known>"
+  },
+  "external_ip": {
+    "success": false,
+    "error": "[Errno 1] Operation not permitted"
+  }
+}

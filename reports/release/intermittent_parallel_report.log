@@ -1,0 +1,7 @@
+{
+  "command": "report",
+  "mode": "m5",
+  "data_mode": "m5_sales_proxy",
+  "report_path": "reports/m5_intermittent_v2/results_summary.md",
+  "run_id": "m5_intermittent_v2"
+}

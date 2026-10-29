@@ -14,5 +14,5 @@ wheels/
 # Data & generated runtime artifacts (per AGENTS.md §4 & §11)
 data/raw/
 data/processed/
-data/demo/
+data/demo*/
 artifacts/

@@ -259,7 +259,8 @@ def predict_sku_origin_outputs(
     with torch.no_grad():
         pmf_t = artifact.model.predict_pmf(x_t)  # (1, S, H + 2)
         q_t, c_hat_t = compute_survival_and_marginal_costs_torch(
-            pmf_t, I_s=I_s, K_s=K_s, b_s=b_s, h_s=h_s, t_s=t_s
+            pmf_t, I_s=I_s, K_s=K_s, b_s=b_s, h_s=h_s, t_s=t_s,
+            tail_mean_excess=artifact.tail_mean_excess
         )
 
     pmf_np = pmf_t[0].cpu().numpy()

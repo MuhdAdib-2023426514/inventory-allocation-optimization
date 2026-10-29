@@ -1,0 +1,7 @@
+{
+  "command": "report",
+  "mode": "demo",
+  "data_mode": "synthetic_demo",
+  "report_path": "reports/demo_v2_quick/results_summary.md",
+  "run_id": "demo_v2_quick"
+}

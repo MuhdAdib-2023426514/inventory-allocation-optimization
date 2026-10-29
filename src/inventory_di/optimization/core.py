@@ -51,6 +51,8 @@ class SolveResult:
     is_feasible: bool
     violations: list[str]
     runtime_seconds: float
+    mip_gap: float = 0.0
+    recomputed_objective: float | None = None
 
 
 @dataclass(frozen=True)
@@ -69,6 +71,8 @@ class ServiceLevelSolveResult:
     service_level_shortfall: float
     model_expected_cost_mu: float
     shortfall_units: float = 0.0
+    maximum_achievable_fill_rate: float | None = None
+    service_mode: str = "hard"
 
     @property
     def achieved_fill_rate(self) -> float:
@@ -328,26 +332,22 @@ def solve_deterministic_milp(
         integrality=integrality,
         bounds=(lb, ub),
         constraints=LinearConstraint(A, b_l, b_u),
+        options={"mip_rel_gap": 0.0},
     )
     runtime = time.perf_counter() - t0
-    if not res.success or res.x is None:
-        x_zero = np.zeros((S, P), dtype=int)
-        ok, viols = check_allocation_feasibility(x_zero, inst)
-        return SolveResult(
-            x=x_zero,
-            solver_objective=float("nan"),
-            solver_status=f"failed ({res.message})",
-            is_feasible=ok,
-            violations=viols,
-            runtime_seconds=runtime,
-        )
+    if res.status != 0 or res.x is None:
+        raise RuntimeError(f"Allocation solve rejected: {res.message}")
 
     x_sol = np.rint(res.x[:N]).astype(int).reshape(S, P)
     ok, viols = check_allocation_feasibility(x_sol, inst)
     exact = evaluate_exact_cost(x_sol, D_target, inst)
+    if not ok or not np.isclose(res.fun, exact.total_cost_mu, atol=1e-5):
+        raise AssertionError("Deterministic solution failed independent validation")
     return SolveResult(
         x=x_sol,
-        solver_objective=exact.total_cost_mu,
+        solver_objective=float(res.fun),
+        mip_gap=float(res.mip_gap),
+        recomputed_objective=exact.total_cost_mu,
         solver_status="optimal",
         is_feasible=ok,
         violations=viols,
@@ -436,19 +436,11 @@ def solve_nominal_marginal_cost_milp(
         integrality=integrality,
         bounds=(lb, ub),
         constraints=LinearConstraint(A, b_l, b_u),
+        options={"mip_rel_gap": 0.0},
     )
     runtime = time.perf_counter() - t0
-    if not res.success or res.x is None:
-        x_zero = np.zeros((S, P), dtype=int)
-        ok, viols = check_allocation_feasibility(x_zero, inst)
-        return SolveResult(
-            x=x_zero,
-            solver_objective=float("nan"),
-            solver_status=f"failed ({res.message})",
-            is_feasible=ok,
-            violations=viols,
-            runtime_seconds=runtime,
-        )
+    if res.status != 0 or res.x is None:
+        raise RuntimeError(f"Allocation solve rejected: {res.message}")
 
     x_sol = np.zeros((S, P), dtype=int)
     for s in range(S):
@@ -457,8 +449,13 @@ def solve_nominal_marginal_cost_milp(
             x_sol[s, p] = int(round(sum(res.x[var_map[(s, p, k)]] for k in range(1, cap + 1))))
 
     ok, viols = check_allocation_feasibility(x_sol, inst)
+    recomputed = sum(float(np.dot(marginal_costs_by_sku[sku], allocation_to_marginal_bits(x_sol[:, p], inst.K[:, p]))) for p, sku in enumerate(inst.skus))
+    if not ok or not np.isclose(res.fun, recomputed, atol=1e-5):
+        raise AssertionError("Nominal solution failed independent validation")
     return SolveResult(
         x=x_sol,
+        mip_gap=float(res.mip_gap),
+        recomputed_objective=recomputed,
         solver_objective=float(res.fun),
         solver_status="optimal",
         is_feasible=ok,
@@ -473,182 +470,9 @@ def solve_multiperiod_carryover_oracle(
     lead_time: int = 0,
     initial_pipeline: list[np.ndarray] | None = None,
 ) -> dict[str, Any]:
-    """Solve the exact multi-period rolling-horizon clairvoyant oracle MILP (`P1.1`).
-
-    Given realized demand trajectory `D_trajectory` of shape `(T, S, P)` over `T` origins,
-    initial stock `I_0 = base_inst.I`, and replenishment lead time `L = lead_time` weeks:
-      - At week `t = 0..T-1`, order integer `x_{t, s, p} in [0, K_{s, p}]` with `sum_s x_{t, s, p} <= W_p`.
-      - Arriving units at week `t`:
-          `a_{t, s, p} = initial_pipeline[t][s, p]` if `t < L` else `x_{t - L, s, p}`.
-      - Inventory dynamics for `t = 0..T-1`:
-          `I_{t, s, p} + a_{t, s, p} - D_{t, s, p} = v_{t, s, p} - u_{t, s, p}`
-          `I_{t+1, s, p} = v_{t, s, p}` (carried-over excess stock >= 0)
-          `u_{t, s, p} >= 0` (shortage at week `t`)
-      - Store capacity at week `t`:
-          `sum_p (I_{t, s, p} + a_{t, s, p}) <= C_s`.
-
-    Because this MILP optimizes jointly over all `t = 0..T-1` under the exact same initial stock,
-    initial pipeline, and physical constraints as any causal rolling policy, its total cost is
-    guaranteed to be a mathematical lower bound (`Rolling Regret >= 0`).
-    """
-    T, S, P = D_trajectory.shape
-    N = S * P
-    L = int(lead_time)
-    init_pipe = (
-        [np.asarray(arr, dtype=int) for arr in initial_pipeline]
-        if initial_pipeline is not None
-        else [np.zeros((S, P), dtype=int) for _ in range(L)]
-    )
-
-    # Variables per week t = 0..T-1 and (s, p):
-    #   x_{t, s, p} : index t*N + sp          (0 .. T*N - 1)
-    #   u_{t, s, p} : index T*N + t*N + sp    (T*N .. 2*T*N - 1)
-    #   v_{t, s, p} : index 2*T*N + t*N + sp  (2*T*N .. 3*T*N - 1)
-    total_vars = 3 * T * N
-    c = np.zeros(total_vars, dtype=float)
-    integrality = np.zeros(total_vars, dtype=int)
-    lb = np.zeros(total_vars, dtype=float)
-    ub = np.full(total_vars, np.inf, dtype=float)
-
-    for t_i in range(T):
-        for s in range(S):
-            for p in range(P):
-                sp = s * P + p
-                idx_x = t_i * N + sp
-                idx_u = T * N + t_i * N + sp
-                idx_v = 2 * T * N + t_i * N + sp
-
-                # Shipping cost is paid on arrived shipments a_{t, s, p}; for t >= T - L, x_{t} never arrives within 0..T-1
-                if t_i + L < T:
-                    c[idx_x] = float(base_inst.t[s, p])
-                else:
-                    c[idx_x] = 0.0
-                    ub[idx_x] = 0.0  # No need to order after T - 1 - L
-                c[idx_u] = float(base_inst.b[s, p])
-                c[idx_v] = float(base_inst.h[s, p]) if base_inst.h[s, p] > 0 else 1e-7
-                integrality[idx_x] = 1
-                integrality[idx_v] = 1
-                if t_i + L < T:
-                    ub[idx_x] = float(base_inst.K[s, p])
-
-    row_ind: list[int] = []
-    col_ind: list[int] = []
-    data_val: list[float] = []
-    b_l_list: list[float] = []
-    b_u_list: list[float] = []
-    r_idx = 0
-
-    # 1. Exact inventory balance for each t, s, p:
-    #    v_{t,s,p} - u_{t,s,p} - I_{t,s,p} - a_{t,s,p} == -D_{t,s,p}
-    for t_i in range(T):
-        for s in range(S):
-            for p in range(P):
-                sp = s * P + p
-                idx_u = T * N + t_i * N + sp
-                idx_v = 2 * T * N + t_i * N + sp
-
-                row_ind.extend([r_idx, r_idx])
-                col_ind.extend([idx_v, idx_u])
-                data_val.extend([1.0, -1.0])
-
-                rhs = -float(D_trajectory[t_i, s, p])
-                if t_i == 0:
-                    rhs += float(base_inst.I[s, p])
-                else:
-                    idx_v_prev = 2 * T * N + (t_i - 1) * N + sp
-                    row_ind.append(r_idx)
-                    col_ind.append(idx_v_prev)
-                    data_val.append(-1.0)
-
-                if t_i < L:
-                    rhs += float(init_pipe[t_i][s, p])
-                else:
-                    idx_x_arr = (t_i - L) * N + sp
-                    row_ind.append(r_idx)
-                    col_ind.append(idx_x_arr)
-                    data_val.append(-1.0)
-
-                b_l_list.append(rhs)
-                b_u_list.append(rhs)
-                r_idx += 1
-
-    # 2. Per-SKU warehouse supply at each week t: sum_s x_{t, s, p} <= W_p
-    for t_i in range(T):
-        for p in range(P):
-            for s in range(S):
-                row_ind.append(r_idx)
-                col_ind.append(t_i * N + s * P + p)
-                data_val.append(1.0)
-            b_l_list.append(-np.inf)
-            b_u_list.append(float(base_inst.W[p]))
-            r_idx += 1
-
-    # 3. Store total capacity at each week t: sum_p (I_{t, s, p} + a_{t, s, p}) <= C_s
-    for t_i in range(T):
-        for s in range(S):
-            rhs_cap = float(base_inst.C[s])
-            for p in range(P):
-                sp = s * P + p
-                if t_i == 0:
-                    rhs_cap -= float(base_inst.I[s, p])
-                else:
-                    idx_v_prev = 2 * T * N + (t_i - 1) * N + sp
-                    row_ind.append(r_idx)
-                    col_ind.append(idx_v_prev)
-                    data_val.append(1.0)
-
-                if t_i < L:
-                    rhs_cap -= float(init_pipe[t_i][s, p])
-                else:
-                    idx_x_arr = (t_i - L) * N + sp
-                    row_ind.append(r_idx)
-                    col_ind.append(idx_x_arr)
-                    data_val.append(1.0)
-
-            b_l_list.append(-np.inf)
-            b_u_list.append(rhs_cap)
-            r_idx += 1
-
-    A = csc_matrix((data_val, (row_ind, col_ind)), shape=(r_idx, total_vars), dtype=float)
-    res = milp(
-        c=c,
-        integrality=integrality,
-        bounds=(lb, ub),
-        constraints=LinearConstraint(A, np.array(b_l_list, dtype=float), np.array(b_u_list, dtype=float)),
-    )
-
-    x_orders = np.zeros((T, S, P), dtype=int)
-    if res.success and res.x is not None:
-        x_orders = np.rint(res.x[: T * N]).astype(int).reshape(T, S, P)
-
-    # Independently simulate exact trajectory cost using the unified InventoryStateTransitionSystem
-    from inventory_di.simulation.simulator import InventoryStateTransitionSystem
-
-    sim = InventoryStateTransitionSystem(
-        base_inst=base_inst,
-        lead_time_weeks=L,
-        initial_pipeline=init_pipe,
-    )
-    for t_i in range(T):
-        sim.step(
-            order_x=x_orders[t_i],
-            realized_demand_D=D_trajectory[t_i],
-            period_idx=t_i,
-        )
-
-    sim_res = sim.get_summary()
-    return {
-        "x_orders": x_orders,
-        "total_cost_mu": sim.total_cost_mu_cumulative,
-        "mean_cost_mu": sim_res["mean_cost_mu"],
-        "mean_shortage_cost_mu": sim_res["mean_shortage_cost_mu"],
-        "mean_holding_cost_mu": sim_res["mean_holding_cost_mu"],
-        "fill_rate": sim_res["fill_rate"],
-        "ending_inventory_units": sim_res["ending_store_inventory_units"],
-        "ending_in_transit_units": sim_res["ending_in_transit_units"],
-        "is_conserved": sim_res["is_conserved"],
-        "solver_status": "optimal" if res.success else f"failed ({res.message})",
-    }
+    """Exact hindsight benchmark over the simulator's dispatch/admission action space."""
+    from inventory_di.optimization.multiperiod import solve_horizon
+    return solve_horizon(D_trajectory, base_inst, lead_time, initial_pipeline)
 
 
 def solve_service_level_constrained_milp(
@@ -656,6 +480,7 @@ def solve_service_level_constrained_milp(
     inst: AllocationInstance,
     target_fill_rate: float = 0.85,
     shortfall_penalty_mu: float = 500.0,
+    mode: str = "hard",
 ) -> ServiceLevelSolveResult:
     """Solve the service-level constrained allocation MILP (`AGENTS.md` §7, Phase 7).
 
@@ -668,7 +493,14 @@ def solve_service_level_constrained_milp(
     """
     t_start = time.perf_counter()
     scenarios = np.asarray(scenarios, dtype=float)
+    if scenarios.ndim != 3 or len(scenarios) == 0 or not np.isfinite(scenarios).all() or (scenarios < 0).any():
+        raise ValueError("Scenarios must be nonempty finite nonnegative (N,S,P)")
+    if not 0 <= target_fill_rate <= 1 or mode not in {"hard", "soft"} or shortfall_penalty_mu < 0:
+        raise ValueError("Invalid service target, mode or penalty")
     N, S, P = scenarios.shape
+    if (S, P) != inst.I.shape:
+        raise ValueError("Scenario dimensions do not match inventory")
+    maximum_fill = None
     M = S * P
     probs = np.full(N, 1.0 / N)
     exp_demand = float(np.mean(np.sum(scenarios, axis=(1, 2))))
@@ -700,8 +532,8 @@ def solve_service_level_constrained_milp(
                 c[idx_u] = pj * float(inst.b[s, p])
                 c[idx_v] = pj * float(inst.h[s, p])
 
-    c[idx_slack] = float(shortfall_penalty_mu) * max(1.0, exp_demand)
-    ub[idx_slack] = 1.0
+    c[idx_slack] = float(shortfall_penalty_mu) * exp_demand if mode == "soft" else 0.0
+    ub[idx_slack] = 1.0 if mode == "soft" else 0.0
 
     row_ind: list[int] = []
     col_ind: list[int] = []
@@ -759,7 +591,7 @@ def solve_service_level_constrained_milp(
 
     row_ind.append(r_idx)
     col_ind.append(idx_slack)
-    data_val.append(-max(1.0, exp_demand))
+    data_val.append(-exp_demand)
 
     b_l_list.append(-np.inf)
     b_u_list.append(float((1.0 - target_fill_rate) * exp_demand))
@@ -772,6 +604,27 @@ def solve_service_level_constrained_milp(
         bounds=(lb, ub),
         constraints=LinearConstraint(A, np.array(b_l_list, dtype=float), np.array(b_u_list, dtype=float)),
     )
+    if mode == "hard" and res.status == 2:
+        # Independently establish maximum expected service, then minimize cost
+        # at that service optimum. No finite penalty can weaken this promise.
+        ub[idx_slack] = 1.0
+        fill_obj = np.zeros(total_vars)
+        for j in range(N):
+            fill_obj[M + j*M:M + (j+1)*M] = probs[j]
+        max_service = milp(c=fill_obj, integrality=integrality, bounds=(lb, ub),
+                           constraints=LinearConstraint(A, b_l_list, b_u_list),
+                           options={"mip_rel_gap": 0.0})
+        if max_service.status != 0:
+            raise RuntimeError(f"Maximum service solve failed: {max_service.message}")
+        min_unmet = float(max_service.fun)
+        maximum_fill = 1.0 - min_unmet / exp_demand if exp_demand > 0 else 1.0
+        from scipy.sparse import vstack
+        A = vstack([A, csc_matrix(fill_obj.reshape(1, -1))], format="csc")
+        b_l_list.append(-np.inf)
+        b_u_list.append(min_unmet + 1e-7)
+        res = milp(c=c, integrality=integrality, bounds=(lb, ub),
+                   constraints=LinearConstraint(A, b_l_list, b_u_list),
+                   options={"mip_rel_gap": 0.0})
     rt = time.perf_counter() - t_start
 
     if res.success and res.x is not None:
@@ -781,8 +634,8 @@ def solve_service_level_constrained_milp(
             float(probs[j]) * np.sum(np.maximum(0, scenarios[j] - inst.I - x_sol))
             for j in range(N)
         ]))
-        achieved_fill = float(max(0.0, 1.0 - (exp_unmet / max(1.0, exp_demand))))
-        is_met = slack_val <= 1e-4 and achieved_fill >= target_fill_rate - 1e-4
+        achieved_fill = float(max(0.0, 1.0 - exp_unmet / exp_demand)) if exp_demand > 0 else 1.0
+        is_met = achieved_fill >= target_fill_rate - 1e-6
 
         model_exp_cost = float(np.sum(inst.t * x_sol) + np.mean([
             np.sum(inst.b * np.maximum(0, scenarios[j] - inst.I - x_sol) +
@@ -806,6 +659,8 @@ def solve_service_level_constrained_milp(
             service_level_shortfall=shortfall_frac,
             model_expected_cost_mu=model_exp_cost,
             shortfall_units=float(shortfall_frac * exp_demand),
+            maximum_achievable_fill_rate=maximum_fill,
+            service_mode=mode,
         )
     else:
         x_fallback = np.zeros((S, P), dtype=int)

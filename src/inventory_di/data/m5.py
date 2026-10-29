@@ -170,14 +170,20 @@ def ingest_m5_dataset(
 
     cal_sub = cal_df[["d", "date", "wm_yr_wk", "event_name_1"]].copy()
     cal_sub["has_event"] = cal_sub["event_name_1"].notna().astype(float)
-    merged = melted.merge(cal_sub, on="d", how="left")
+    merged = melted.merge(cal_sub, on="d", how="left", validate="many_to_one")
+
+    if merged["date"].isna().any() or len(merged) != len(melted):
+        raise ValueError("Calendar join lost coverage or changed row count")
 
     prices_df = pd.read_csv(paths["sell_prices"])
     prices_sub = prices_df[
         prices_df["store_id"].isin(chosen_stores) & prices_df["item_id"].isin(chosen_skus)
     ][["store_id", "item_id", "wm_yr_wk", "sell_price"]].copy()
-    merged = merged.merge(prices_sub, on=["store_id", "item_id", "wm_yr_wk"], how="left")
-    merged["sell_price"] = merged.groupby(["store_id", "item_id"])["sell_price"].ffill().bfill().fillna(1.0)
+    merged = merged.merge(prices_sub, on=["store_id", "item_id", "wm_yr_wk"], how="left", validate="many_to_one")
+    if len(merged) != len(melted):
+        raise ValueError("Price join changed row count")
+    merged = merged.sort_values(["store_id", "item_id", "date"])
+    merged["sell_price"] = merged.groupby(["store_id", "item_id"])["sell_price"].ffill().fillna(1.0)
 
     # Map selected_d_cols into aligned 7-day blocks
     d_order = {d_name: idx for idx, d_name in enumerate(selected_d_cols)}
@@ -252,6 +258,10 @@ def ingest_m5_dataset(
         "demand_regime": getattr(cfg.data, "demand_regime", "regular"),
         "sku_regime_metadata": sku_regime_metadata,
         "cohort_selection_split": "train",
+        "price_policy": "Per-series chronological forward-fill; fixed 1.0 fallback; previous-week feature only",
+        "adi_frequency": "daily, inverse of mean store nonzero-sales rate",
+        "cohort_filters": {"regular_mean_daily": [0.25, 2.2], "regular_nonzero_rate_min": 0.35,
+                           "intermittent_mean_daily": [0.08, 0.65], "intermittent_nonzero_rate": [0.08, 0.28]},
         "cap_and_support_split": "train",
         "calibration_split": "val",
         "copula_fit_split": "train",

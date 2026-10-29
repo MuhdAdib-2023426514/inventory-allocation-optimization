@@ -1,0 +1,9 @@
+{
+  "git_status": " M README.md\n M app/streamlit_app.py\n M docs/AUDIT_REPORT.md\n M docs/DECISION_POLICY_FRAMEWORK.md\n M docs/IMPLEMENTATION_STATUS.md\n M docs/INTERVIEW_READINESS_REPORT.md\n M docs/PRESENTATION_SPEAKER_NOTES.md\n M docs/presentation_slides.html\n M docs/presentation_slides.md\n M docs/presentation_slides.pptx\n M reports/m5/results_summary.md\n M reports/results_summary.md\n M scripts/generate_presentation_deck.py\n M src/inventory_di/evaluation/backtest.py\n M src/inventory_di/models/dfl.py\n M tests/test_simulation_and_nonanticipativity.py\n?? docs/INTERVIEW_READINESS_IMPLEMENTATION_PLAN.md\n?? docs/PRESENTATION_REVIEW.md\n?? reports/presentation_review_evidence.json\n?? tests/test_presentation_review_regressions.py\n",
+  "historical_manifests": {
+    "artifacts/demo/run_manifest.json": "c0467cd94ea4c6a49019b760fa70562090da243a6345ec7019ee77709b45cba7",
+    "artifacts/m5_intermittent/run_manifest.json": "b651c747d6c1f977bff3e9318963b9b28d617685322507635dd53506023cd699",
+    "artifacts/m5/run_manifest.json": "30026d61be8e35dcc50d4a4dbaadbf408d4adc94374633dd53b266b0999a61a3"
+  },
+  "source_backup": "/tmp/inventory_pre_v2_source.zip"
+}

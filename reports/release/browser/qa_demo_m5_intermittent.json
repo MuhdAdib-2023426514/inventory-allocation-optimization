@@ -1,0 +1,95 @@
+{
+  "external_http_blocked": true,
+  "external_attempts": [],
+  "page_errors": [],
+  "console_errors": [],
+  "pages": [
+    {
+      "mode": "demo",
+      "page": "Page A \u2014 Problem & Data",
+      "seconds": 0.39085258299746783
+    },
+    {
+      "mode": "demo",
+      "page": "Page B \u2014 Models & Diagnostics",
+      "seconds": 0.3849780419986928
+    },
+    {
+      "mode": "demo",
+      "page": "Page C \u2014 Allocation Results",
+      "seconds": 0.39445345800049836
+    },
+    {
+      "mode": "demo",
+      "page": "Page D \u2014 Risk & Robustness",
+      "seconds": 0.46202058299968485
+    },
+    {
+      "mode": "demo",
+      "page": "Page E \u2014 Evidence & Business Impact",
+      "seconds": 0.4404841249997844
+    },
+    {
+      "mode": "m5_intermittent",
+      "page": "Page A \u2014 Problem & Data",
+      "seconds": 0.40810829200199805
+    },
+    {
+      "mode": "m5_intermittent",
+      "page": "Page B \u2014 Models & Diagnostics",
+      "seconds": 0.4008004580027773
+    },
+    {
+      "mode": "m5_intermittent",
+      "page": "Page C \u2014 Allocation Results",
+      "seconds": 0.5502719590003835
+    },
+    {
+      "mode": "m5_intermittent",
+      "page": "Page D \u2014 Risk & Robustness",
+      "seconds": 0.8138464580042637
+    },
+    {
+      "mode": "m5_intermittent",
+      "page": "Page E \u2014 Evidence & Business Impact",
+      "seconds": 0.4256327500042971
+    }
+  ],
+  "controls": [
+    {
+      "mode": "demo",
+      "control": "Tail Ambiguity Parameter (alpha)",
+      "action": "minimum"
+    },
+    {
+      "mode": "demo",
+      "control": "Tail Risk Weight (risk_weight)",
+      "action": "minimum"
+    },
+    {
+      "mode": "demo",
+      "control": "Warehouse Supply Scarcity Multiplier",
+      "action": "minimum"
+    },
+    {
+      "mode": "m5_intermittent",
+      "control": "Tail Ambiguity Parameter (alpha)",
+      "action": "minimum"
+    },
+    {
+      "mode": "m5_intermittent",
+      "control": "Tail Risk Weight (risk_weight)",
+      "action": "minimum"
+    },
+    {
+      "mode": "m5_intermittent",
+      "control": "Warehouse Supply Scarcity Multiplier",
+      "action": "minimum"
+    }
+  ],
+  "downloads": [
+    "reports/release/browser/demo_allocations.csv",
+    "reports/release/browser/m5_intermittent_allocations.csv"
+  ],
+  "status": "PASS"
+}

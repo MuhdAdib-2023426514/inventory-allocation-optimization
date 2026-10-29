@@ -1,0 +1,9 @@
+{
+  "command": "prepare",
+  "mode": "demo",
+  "data_mode": "synthetic_demo",
+  "processed_dir": "data/demo_v2",
+  "weekly_demand_rows": 216,
+  "inventory_config_rows": 6,
+  "weekly_demand_sha256": "ecef2889145dc4618cba724e2bc6754d0e9b6d7fc49fd7ead8fbdf2b51ca9fbb"
+}

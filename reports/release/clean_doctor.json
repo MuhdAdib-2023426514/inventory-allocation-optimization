@@ -1,0 +1,26 @@
+{
+  "status": "PASS",
+  "python_version": "3.12.14",
+  "toy_milp_oracle": {
+    "optimal_allocation": [
+      60,
+      0
+    ],
+    "realized_cost_mu": 20.0,
+    "fill_rate": 0.75,
+    "solver_status": "optimal"
+  },
+  "pyepo_spoplus_smoke": {
+    "solver": "appsi_highs",
+    "true_objective": -25.0,
+    "spoplus_loss": 31.466224670410156,
+    "weight_grad_norm": 7.797209739685059
+  },
+  "m5_raw_data_present": false,
+  "m5_files": {
+    "calendar.csv": false,
+    "sell_prices.csv": false,
+    "sales_train_evaluation.csv": false,
+    "sales_train_validation.csv": false
+  }
+}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -12,22 +13,22 @@ import pandas as pd
 import torch
 
 from inventory_di.config import ExperimentConfig
-from inventory_di.evaluation.metrics import REQUIRED_POLICIES, summarize_backtest_metrics
+from inventory_di.evaluation.metrics import EVALUATED_POLICIES, summarize_backtest_metrics
 from inventory_di.io import (
     get_environment_snapshot,
     get_git_commit,
     save_json,
     save_parquet,
     sha256_file,
+    source_provenance,
     validate_allocation_results_df,
     validate_backtest_metrics_df,
 )
-from inventory_di.models.dfl import train_dfl_sku_model, train_joint_multi_sku_dfl_models
+from inventory_di.models.dfl import train_joint_multi_sku_dfl_models
 from inventory_di.models.distributions import EmpiricalCopulaScenarioGenerator
 from inventory_di.models.supervised import (
     SKUForecastArtifact,
     predict_sku_origin_outputs,
-    train_supervised_sku_model,
 )
 from inventory_di.optimization.baselines import (
     allocate_equal_shares,
@@ -78,7 +79,7 @@ def build_allocation_instance_from_config_df(
             else int(row.opening_stock_units)
         )
         K[s_i, p_i] = int(row.store_sku_unit_cap)
-        W[p_i] = max(1, int(round(float(row.warehouse_supply_units) * float(supply_multiplier))))
+        W[p_i] = max(0, int(round(float(row.warehouse_supply_units) * float(supply_multiplier))))
         C[s_i] = int(row.store_total_capacity_units)
         b[s_i, p_i] = float(row.unit_shortage_penalty_mu) * float(shortage_penalty_multiplier)
         h[s_i, p_i] = float(row.unit_holding_cost_mu)
@@ -167,93 +168,42 @@ def train_all_models(
             lineage.get("support_stats", {}).get("recommended_support_h", cfg.model.max_demand_support_h),
         )
     )
-    tail_excess = float(
-        lineage.get("support_stats", {}).get("tail_mean_excess_above_h", 2.0)
-    )
+    excess = weekly_df.loc[(weekly_df.split == "train") & (weekly_df.observed_units_proxy > support_h), "observed_units_proxy"] - support_h
+    tail_excess = float(excess.mean()) if len(excess) else 2.0
 
     art_dir = Path(cfg.data.artifacts_dir)
     art_dir.mkdir(parents=True, exist_ok=True)
 
-    sup_artifacts: dict[str, SKUForecastArtifact] = {}
-    dfl_artifacts: dict[str, SKUForecastArtifact] = {}
-    ablation_rows: list[dict[str, Any]] = []
-
-    for p_idx, sku in enumerate(inst.skus):
-        sku_seed = cfg.global_seed + 100 * p_idx
-        if model_choice in {"all", "supervised"}:
-            sup_art = train_supervised_sku_model(
-                weekly_df=weekly_df,
-                sku_id=sku,
-                stores=inst.stores,
-                support_h=support_h,
-                tail_mean_excess=tail_excess,
-                hidden_dim=cfg.model.hidden_dim,
-                learning_rate=cfg.model.learning_rate,
-                epochs=cfg.model.epochs,
-                seed=sku_seed,
-            )
-            sup_artifacts[sku] = sup_art
-
-        if model_choice in {"all", "dfl"} and p_idx == 0:
-            # Run quick lambda_DFL ablation on the first SKU to document NLL vs SPO+ trade-off
-            for lam in cfg.model.lambda_dfl_grid:
-                abl_art = train_dfl_sku_model(
-                    weekly_df=weekly_df,
-                    sku_id=sku,
-                    stores=inst.stores,
-                    I_s=inst.I[:, p_idx],
-                    K_s=inst.K[:, p_idx],
-                    W_p=int(inst.W[p_idx]),
-                    b_s=inst.b[:, p_idx],
-                    h_s=inst.h[:, p_idx],
-                    t_s=inst.t[:, p_idx],
-                    support_h=support_h,
-                    tail_mean_excess=tail_excess,
-                    hidden_dim=cfg.model.hidden_dim,
-                    learning_rate=cfg.model.learning_rate,
-                    epochs=max(8, cfg.model.epochs // 2),
-                    batch_size=cfg.model.batch_size,
-                    lambda_dfl=float(lam),
-                    spoplus_processes=cfg.model.spoplus_processes,
-                    seed=sku_seed,
-                )
-                ablation_rows.append(
-                    {
-                        "sku_id": sku,
-                        "lambda_dfl": float(lam),
-                        "val_nll": abl_art.calibration_info["nll"],
-                        "val_mae": abl_art.calibration_info["mae"],
-                        "val_wape": abl_art.calibration_info["wape"],
-                        "val_decision_regret_mu": abl_art.calibration_info.get(
-                            "val_decision_regret_mu", 0.0
-                        ),
-                        "optimal_temperature": abl_art.calibration_info["optimal_temperature"],
-                    }
-                )
-
-    # Priority 5: Train DFL jointly across all SKUs with the exact store-capacity-coupled polytope
+    started = time.perf_counter()
+    def train_joint(lam):
+        return train_joint_multi_sku_dfl_models(
+            weekly_df=weekly_df, skus=inst.skus, stores=inst.stores, I_sp=inst.I,
+            K_sp=inst.K, W_p=inst.W, C_s=inst.C, b_sp=inst.b, h_sp=inst.h, t_sp=inst.t,
+            support_h=support_h, tail_mean_excess=tail_excess, hidden_dim=cfg.model.hidden_dim,
+            learning_rate=cfg.model.learning_rate, epochs=cfg.model.epochs,
+            batch_size=cfg.model.batch_size, lambda_dfl=lam,
+            spoplus_processes=cfg.model.spoplus_processes, seed=cfg.global_seed)
+    sup_artifacts, dfl_artifacts = {}, {}
+    ablation_rows = []
+    if model_choice in {"all", "supervised"}:
+        sup_artifacts = train_joint(0.0)
     if model_choice in {"all", "dfl"}:
-        dfl_artifacts = train_joint_multi_sku_dfl_models(
-            weekly_df=weekly_df,
-            skus=inst.skus,
-            stores=inst.stores,
-            I_sp=inst.I,
-            K_sp=inst.K,
-            W_p=inst.W,
-            C_s=inst.C,
-            b_sp=inst.b,
-            h_sp=inst.h,
-            t_sp=inst.t,
-            support_h=support_h,
-            tail_mean_excess=tail_excess,
-            hidden_dim=cfg.model.hidden_dim,
-            learning_rate=cfg.model.learning_rate,
-            epochs=cfg.model.epochs,
-            batch_size=cfg.model.batch_size,
-            lambda_dfl=cfg.model.lambda_dfl,
-            spoplus_processes=cfg.model.spoplus_processes,
-            seed=cfg.global_seed,
-        )
+        best_score = float("inf")
+        for lam in sorted(set(cfg.model.lambda_dfl_grid + [cfg.model.lambda_dfl])):
+            if lam == 0 and sup_artifacts:
+                arts = sup_artifacts
+            else:
+                arts = train_joint(float(lam))
+            for sku, art in arts.items():
+                cal = art.calibration_info
+                ablation_rows.append(dict(sku_id=sku, lambda_dfl=lam, val_nll=cal["nll"],
+                    val_mae=cal["mae"], val_wape=cal["wape"],
+                    val_decision_regret_mu=cal["val_decision_regret_mu"], epochs=cfg.model.epochs))
+            score = float(np.mean([a.calibration_info["nll"] + 0.15*a.calibration_info["val_decision_regret_mu"] for a in arts.values()]))
+            if lam > 0 and score < best_score:
+                best_score, dfl_artifacts = score, arts
+        if not dfl_artifacts:
+            raise ValueError("DFL requires a positive lambda candidate")
 
     hashes: dict[str, str] = {}
     if sup_artifacts:
@@ -266,6 +216,8 @@ def train_all_models(
         )
 
     training_diagnostics = {
+        "training_seconds": time.perf_counter() - started,
+        "effective_config": cfg.model_dump(),
         "data_mode": cfg.data_mode,
         "support_h": support_h,
         "tail_mean_excess": tail_excess,
@@ -289,7 +241,13 @@ def train_all_models(
         },
         "lambda_dfl_ablation": ablation_rows,
     }
-    save_json(training_diagnostics, art_dir / "training_diagnostics.json")
+    diag_path = art_dir / "training_diagnostics.json"
+    if model_choice != "all" and diag_path.exists():
+        old = json.loads(diag_path.read_text())
+        other = "dfl" if model_choice == "supervised" else "supervised"
+        training_diagnostics[other] = old.get(other, {})
+        training_diagnostics["checkpoints"] = {**old.get("checkpoints", {}), **hashes}
+    save_json(training_diagnostics, diag_path)
     return training_diagnostics
 
 
@@ -580,50 +538,33 @@ def run_multi_seed_and_carryover_experiments(
 
     # P1.2: Independent training-seed + scenario-seed experiments across `cfg.evaluation.seeds`
     seed_rows: list[dict[str, Any]] = []
-    train_epochs_seed = max(10, int(round(cfg.model.epochs * 0.6)))
     for eval_seed in cfg.evaluation.seeds:
         seed_int = int(eval_seed)
-        if seed_int == int(cfg.global_seed) or not getattr(cfg.evaluation, "independent_training_seeds", True):
-            seed_sup_arts = sup_artifacts
-            seed_dfl_arts = dfl_artifacts
+        independent = bool(cfg.evaluation.independent_training_seeds)
+        seed_cp_sup, seed_cp_dfl = copula_sup, copula_dfl
+        seed_sup_params, seed_dfl_params = sup_dro_params, dfl_dro_params
+        if seed_int == int(cfg.global_seed) or not independent:
+            seed_sup_arts, seed_dfl_arts = sup_artifacts, dfl_artifacts
         else:
-            seed_sup_arts = {}
-            for p_idx, sku in enumerate(base_inst.skus):
-                seed_sup_arts[sku] = train_supervised_sku_model(
-                    weekly_df=weekly_df,
-                    sku_id=sku,
-                    stores=base_inst.stores,
-                    support_h=support_h,
-                    tail_mean_excess=tail_excess,
-                    hidden_dim=cfg.model.hidden_dim,
-                    learning_rate=cfg.model.learning_rate,
-                    epochs=train_epochs_seed,
-                    seed=seed_int + 100 * p_idx,
-                )
-            seed_dfl_arts = train_joint_multi_sku_dfl_models(
-                weekly_df=weekly_df,
-                skus=base_inst.skus,
-                stores=base_inst.stores,
-                I_sp=base_inst.I,
-                K_sp=base_inst.K,
-                W_p=base_inst.W,
-                C_s=base_inst.C,
-                b_sp=base_inst.b,
-                h_sp=base_inst.h,
-                t_sp=base_inst.t,
-                support_h=support_h,
-                tail_mean_excess=tail_excess,
-                hidden_dim=cfg.model.hidden_dim,
-                learning_rate=cfg.model.learning_rate,
-                epochs=train_epochs_seed,
-                batch_size=cfg.model.batch_size,
-                lambda_dfl=cfg.model.lambda_dfl,
-                spoplus_processes=cfg.model.spoplus_processes,
-                seed=seed_int,
-            )
+            seed_cfg = cfg.model_copy(deep=True)
+            seed_cfg.global_seed = seed_int
+            seed_cfg.run_id += f"_seed_{seed_int}"
+            seed_dir = Path(cfg.data.artifacts_dir) / "seeds" / str(seed_int)
+            seed_cfg.data.artifacts_dir = str(seed_dir)
+            train_all_models(seed_cfg, weekly_df, inv_df, {"support_stats": {"recommended_support_h": support_h, "tail_mean_excess_above_h": tail_excess}}, "all")
+            seed_sup_arts = load_sku_forecast_artifacts(seed_dir / "supervised_models.pt", cfg.model.hidden_dim)
+            seed_dfl_arts = load_sku_forecast_artifacts(seed_dir / "dfl_models.pt", cfg.model.hidden_dim)
+            seed_cp_sup = EmpiricalCopulaScenarioGenerator(base_inst.stores, base_inst.skus, support_h, tail_excess)
+            seed_cp_dfl = EmpiricalCopulaScenarioGenerator(base_inst.stores, base_inst.skus, support_h, tail_excess)
+            seed_cp_sup.fit_on_train(weekly_df[weekly_df.split == "train"])
+            seed_cp_dfl.fit_on_train(weekly_df[weekly_df.split == "train"])
+            tuning = calibrate_scenarios_and_tune_dro_on_val(seed_cfg, weekly_df, base_inst,
+                seed_sup_arts, seed_dfl_arts, seed_cp_sup, seed_cp_dfl)
+            seed_sup_params, seed_dfl_params = tuning["supervised_dro_selected"], tuning["dfl_dro_selected"]
+            save_json(tuning, seed_dir / "validation_dro_tuning.json")
 
-        pol_costs: dict[str, list[float]] = {p: [] for p in REQUIRED_POLICIES}
-        pol_fills: dict[str, list[float]] = {p: [] for p in REQUIRED_POLICIES}
+        pol_costs: dict[str, list[float]] = {p: [] for p in EVALUATED_POLICIES}
+        pol_fills: dict[str, list[float]] = {p: [] for p in EVALUATED_POLICIES}
         for o_idx, inp in enumerate(origin_inputs):
             D_real = inp["D_realized"]
             origin_df = inp["origin_df"]
@@ -655,10 +596,10 @@ def run_multi_seed_and_carryover_experiments(
                 d_pmfs_seed[sku] = do["pmf"]
                 d_mc_seed[sku] = do["c_hat_flat"]
 
-            s_scen = copula_sup.sample_scenarios(
+            s_scen = seed_cp_sup.sample_scenarios(
                 s_pmfs_seed, num_scenarios=cfg.dro.num_scenarios, seed=seed_int + 1000 + o_idx
             )
-            d_scen = copula_dfl.sample_scenarios(
+            d_scen = seed_cp_dfl.sample_scenarios(
                 d_pmfs_seed, num_scenarios=cfg.dro.num_scenarios, seed=seed_int + 1000 + o_idx
             )
             sols = {
@@ -670,16 +611,18 @@ def run_multi_seed_and_carryover_experiments(
                 "supervised_dro": solve_scenario_reweighting_dro_milp(
                     s_scen,
                     base_inst,
-                    alpha=float(sup_dro_params["alpha"]),
-                    risk_weight=float(sup_dro_params["risk_weight"]),
+                    alpha=float(seed_sup_params["alpha"]),
+                    risk_weight=float(seed_sup_params["risk_weight"]),
                 ).x,
                 "dfl_pto": solve_nominal_marginal_cost_milp(d_mc_seed, base_inst).x,
                 "dfl_dro": solve_scenario_reweighting_dro_milp(
                     d_scen,
                     base_inst,
-                    alpha=float(dfl_dro_params["alpha"]),
-                    risk_weight=float(dfl_dro_params["risk_weight"]),
+                    alpha=float(seed_dfl_params["alpha"]),
+                    risk_weight=float(seed_dfl_params["risk_weight"]),
                 ).x,
+                "supervised_stochastic": solve_scenario_reweighting_dro_milp(s_scen, base_inst, risk_weight=0).x,
+                "dfl_stochastic": solve_scenario_reweighting_dro_milp(d_scen, base_inst, risk_weight=0).x,
                 "clairvoyant_oracle": solve_clairvoyant_oracle(D_real, base_inst).x,
             }
             for pol_name, x_mat in sols.items():
@@ -687,11 +630,13 @@ def run_multi_seed_and_carryover_experiments(
                 pol_costs[pol_name].append(cb.total_cost_mu)
                 pol_fills[pol_name].append(cb.fill_rate)
         oracle_seed_mean = float(np.mean(pol_costs["clairvoyant_oracle"]))
-        for pol_name in REQUIRED_POLICIES:
+        for pol_name in EVALUATED_POLICIES:
             seed_rows.append(
                 {
                     "seed": seed_int,
-                    "training_seed_independent": True,
+                    "training_seed_independent": independent,
+                    "epochs_budget": cfg.model.epochs,
+                    "batch_size": cfg.model.batch_size,
                     "policy": pol_name,
                     "mean_cost_mu": float(np.mean(pol_costs[pol_name])),
                     "mean_regret_mu": float(np.mean(pol_costs[pol_name]) - oracle_seed_mean),
@@ -718,7 +663,7 @@ def run_multi_seed_and_carryover_experiments(
         )
         oracle_mp_cost = float(oracle_mp["mean_cost_mu"])
 
-        for pol_name in REQUIRED_POLICIES:
+        for pol_name in EVALUATED_POLICIES:
             if pol_name == "clairvoyant_oracle":
                 carryover_rows.append(
                     {
@@ -749,8 +694,24 @@ def run_multi_seed_and_carryover_experiments(
 
                 if lead_time == 0:
                     I_order_alloc = I_curr.copy()
-                    mc_sup = inp["sup_mc"]
-                    mc_dfl = inp["dfl_mc"]
+                    # Carryover changes the survival thresholds I_s + k. The cached
+                    # zero-stock costs would value units already on the shelf again.
+                    mc_sup = {
+                        sku: predict_sku_origin_outputs(
+                            sup_artifacts[sku], inp["origin_df"],
+                            I_curr[:, p_i], base_inst.K[:, p_i],
+                            base_inst.b[:, p_i], base_inst.h[:, p_i], base_inst.t[:, p_i],
+                        )["c_hat_flat"]
+                        for p_i, sku in enumerate(base_inst.skus)
+                    }
+                    mc_dfl = {
+                        sku: predict_sku_origin_outputs(
+                            dfl_artifacts[sku], inp["origin_df"],
+                            I_curr[:, p_i], base_inst.K[:, p_i],
+                            base_inst.b[:, p_i], base_inst.h[:, p_i], base_inst.t[:, p_i],
+                        )["c_hat_flat"]
+                        for p_i, sku in enumerate(base_inst.skus)
+                    }
                     sup_scen_order = inp["sup_scen"]
                     dfl_scen_order = inp["dfl_scen"]
                 else:
@@ -758,15 +719,15 @@ def run_multi_seed_and_carryover_experiments(
                     # Expected demand at current week derived strictly from F_{o_idx}
                     exp_d_curr = (
                         inp["dfl_exp"]
-                        if pol_name in {"dfl_pto", "dfl_dro"}
+                        if pol_name in {"dfl_pto", "dfl_dro", "dfl_stochastic"}
                         else (
                             inp["sup_exp"]
-                            if pol_name in {"supervised_pto", "supervised_dro"}
+                            if pol_name in {"supervised_pto", "supervised_dro", "supervised_stochastic"}
                             else inp["trailing_signals"]
                         )
                     )
                     # Arriving shipment at current week (from pipeline or deferred queue)
-                    arriving_curr = (
+                    arriving_curr = sim.deferred_arrivals.copy() + (
                         sim.pipeline[0].copy()
                         if len(sim.pipeline) > 0
                         else np.zeros((S, P), dtype=int)
@@ -864,19 +825,19 @@ def run_multi_seed_and_carryover_experiments(
                     x_order = solve_nominal_marginal_cost_milp(mc_sup, inst_order).x
                 elif pol_name == "dfl_pto":
                     x_order = solve_nominal_marginal_cost_milp(mc_dfl, inst_order).x
-                elif pol_name == "supervised_dro":
+                elif pol_name in {"supervised_dro", "supervised_stochastic"}:
                     x_order = solve_scenario_reweighting_dro_milp(
                         sup_scen_order,
                         inst_order,
                         alpha=float(sup_dro_params["alpha"]),
-                        risk_weight=float(sup_dro_params["risk_weight"]),
+                        risk_weight=0.0 if pol_name == "supervised_stochastic" else float(sup_dro_params["risk_weight"]),
                     ).x
                 else:  # dfl_dro
                     x_order = solve_scenario_reweighting_dro_milp(
                         dfl_scen_order,
                         inst_order,
                         alpha=float(dfl_dro_params["alpha"]),
-                        risk_weight=float(dfl_dro_params["risk_weight"]),
+                        risk_weight=0.0 if pol_name == "dfl_stochastic" else float(dfl_dro_params["risk_weight"]),
                     ).x
 
                 # Physical state transition with strict conservation verified
@@ -885,6 +846,8 @@ def run_multi_seed_and_carryover_experiments(
             sim_summary = sim.get_summary()
             mean_pol_cost = float(sim_summary["mean_cost_mu"])
             raw_regret = float(mean_pol_cost - oracle_mp_cost)
+            if raw_regret < -1e-5:
+                raise AssertionError(f"Negative rolling regret: {raw_regret}")
             carryover_rows.append(
                 {
                     "lead_time_weeks": int(lead_time),
@@ -968,6 +931,7 @@ def run_rolling_backtest(
     lineage: dict[str, Any],
 ) -> dict[str, Any]:
     """Execute rolling-origin out-of-sample evaluation across all 7 required policies (`AGENTS.md` §8)."""
+    backtest_started = time.perf_counter()
     inst = build_allocation_instance_from_config_df(inv_df)
     S, P = len(inst.stores), len(inst.skus)
     store_idx = {s: i for i, s in enumerate(inst.stores)}
@@ -1013,6 +977,7 @@ def run_rolling_backtest(
     cached_origin_bundles: dict[str, Any] = {}
     origin_env_records: list[dict[str, Any]] = []
 
+    timing_rows = []
     for o_idx, origin in enumerate(test_origins):
         origin_df = weekly_df[weekly_df["forecast_origin"] == origin].copy()
         origin_seed = cfg.global_seed + 1000 + o_idx
@@ -1042,6 +1007,7 @@ def run_rolling_backtest(
         dfl_mc: dict[str, np.ndarray] = {}
         forecast_quantiles_rows: list[dict[str, Any]] = []
 
+        inference_started = time.perf_counter()
         for p_i, sku in enumerate(inst.skus):
             s_out = predict_sku_origin_outputs(
                 sup_artifacts[sku],
@@ -1087,6 +1053,8 @@ def run_rolling_backtest(
                     }
                 )
 
+        inference_seconds = time.perf_counter() - inference_started
+        sample_started = time.perf_counter()
         # 4. Sample common-random-number joint demand scenarios for DRO policies
         # Both use identical `origin_seed` so the underlying uniform rank draws U are identical
         sup_scenarios = copula_sup.sample_scenarios(
@@ -1096,6 +1064,8 @@ def run_rolling_backtest(
             dfl_pmfs, num_scenarios=cfg.dro.num_scenarios, seed=origin_seed
         )
 
+        sample_seconds = time.perf_counter() - sample_started
+        solve_started = time.perf_counter()
         # 5. Solve all 7 policies on the exact same instance (using validation-tuned DRO parameters)
         res_equal = allocate_equal_shares(inst)
         res_prop = allocate_proportional_shares(trailing_signals, inst)
@@ -1113,9 +1083,13 @@ def run_rolling_backtest(
             alpha=dfl_alpha_star,
             risk_weight=dfl_rw_star,
         )
+        res_sup_stochastic = solve_scenario_reweighting_dro_milp(sup_scenarios, inst, risk_weight=0)
+        res_dfl_stochastic = solve_scenario_reweighting_dro_milp(dfl_scenarios, inst, risk_weight=0)
         res_oracle = solve_clairvoyant_oracle(D_realized, inst)
         oracle_cost_mu = evaluate_exact_cost(res_oracle.x, D_realized, inst).total_cost_mu
 
+        timing_rows.append(dict(origin=origin, inference_seconds=inference_seconds, scenario_seconds=sample_seconds, solve_group_seconds=time.perf_counter()-solve_started))
+        solution_gaps = {}
         policy_solutions: dict[str, tuple[np.ndarray, str, bool, float, float, float]] = {}
         # Compute model-implied expected cost & CVaR for each policy on reference scenarios
         for pol_name, sol_obj, scen_ref, alpha_ref in [
@@ -1125,10 +1099,15 @@ def run_rolling_backtest(
             ("supervised_dro", res_sup_dro, sup_scenarios, sup_alpha_star),
             ("dfl_pto", res_dfl_pto, dfl_scenarios, cfg.dro.alpha),
             ("dfl_dro", res_dfl_dro, dfl_scenarios, dfl_alpha_star),
+            ("supervised_stochastic", res_sup_stochastic, sup_scenarios, cfg.dro.alpha),
+            ("dfl_stochastic", res_dfl_stochastic, dfl_scenarios, cfg.dro.alpha),
             ("clairvoyant_oracle", res_oracle, sup_scenarios, cfg.dro.alpha),
         ]:
+            if sol_obj.solver_status not in {"optimal", "heuristic_feasible"} or not sol_obj.is_feasible:
+                raise RuntimeError(f"Rejected scientific policy solve: {pol_name}")
+            solution_gaps[pol_name] = float(sol_obj.mip_gap)
             scen_stats = evaluate_allocation_on_scenarios(
-                sol_obj.x, scen_ref, inst, alpha=alpha_ref
+                sol_obj.x, sup_scenarios, inst, alpha=cfg.dro.alpha
             )
             policy_solutions[pol_name] = (
                 sol_obj.x,
@@ -1153,7 +1132,7 @@ def run_rolling_backtest(
             ).encode("utf-8")
         ).hexdigest()[:16]
 
-        for pol_name in REQUIRED_POLICIES:
+        for pol_name in EVALUATED_POLICIES:
             x_mat, status_str, is_feas, rt_sec, mod_exp, mod_cvar = policy_solutions[pol_name]
             realized = evaluate_exact_cost(x_mat, D_realized, inst)
             regret_mu = float(realized.total_cost_mu - oracle_cost_mu)
@@ -1171,6 +1150,9 @@ def run_rolling_backtest(
                     "unmet_units": realized.unmet_units,
                     "fill_rate": realized.fill_rate,
                     "oracle_regret_mu": regret_mu,
+                    "model_risk_alpha": cfg.dro.alpha,
+                    "model_evaluation_distribution": "supervised_reference_common_to_all_policies",
+                    "solver_mip_gap": solution_gaps[pol_name],
                     "model_expected_cost_mu": mod_exp,
                     "model_cvar_cost_mu": mod_cvar,
                     "solver_status": status_str,
@@ -1294,7 +1276,10 @@ def run_rolling_backtest(
         dfl_dro_params={"alpha": dfl_alpha_star, "risk_weight": dfl_rw_star},
     )
 
+    from inventory_di.evaluation.sensitivity import distribution_sensitivity
+    distribution_sens = distribution_sensitivity(cfg, weekly_df, inst, dfl_artifacts, {"alpha": dfl_alpha_star, "risk_weight": dfl_rw_star})
     art_dir = Path(cfg.data.artifacts_dir)
+    save_parquet(distribution_sens, art_dir / "distribution_sensitivity.parquet")
     alloc_sha = save_parquet(alloc_df, art_dir / "allocation_results.parquet")
     metrics_sha = save_parquet(metrics_df, art_dir / "backtest_metrics.parquet")
     sens_sha = save_parquet(sensitivity_df, art_dir / "risk_sensitivity.parquet")
@@ -1326,7 +1311,7 @@ def run_rolling_backtest(
     ).hexdigest()[:16]
 
     solver_statuses_by_pol: dict[str, list[str]] = {}
-    for pol in REQUIRED_POLICIES:
+    for pol in EVALUATED_POLICIES:
         solver_statuses_by_pol[pol] = (
             metrics_df[metrics_df["policy"] == pol].sort_values("origin")["solver_status"].tolist()
         )
@@ -1334,6 +1319,9 @@ def run_rolling_backtest(
     run_manifest = {
         "run_id": cfg.run_id,
         "git_commit": get_git_commit(),
+        "source": source_provenance(),
+        "effective_config": cfg.model_dump(),
+        "evaluation_disclosure": "Retrospective corrected rerun on previously inspected test periods; not a fresh confirmatory holdout",
         "python_version": get_environment_snapshot()["python_version"],
         "platform": get_environment_snapshot()["platform"],
         "global_seed": cfg.global_seed,
@@ -1351,8 +1339,8 @@ def run_rolling_backtest(
         "test_origins": test_origins,
         "common_scenario_seed": int(cfg.global_seed + 1000),
         "num_scenarios": int(cfg.dro.num_scenarios),
-        "policies_evaluated": REQUIRED_POLICIES,
-        "policy_origin_Fingerprints": {pol: combined_fp for pol in REQUIRED_POLICIES},
+        "policies_evaluated": EVALUATED_POLICIES,
+        "policy_origin_Fingerprints": {pol: combined_fp for pol in EVALUATED_POLICIES},
         "solver_statuses": solver_statuses_by_pol,
         "metrics_recorded": sorted(list(metrics_df.columns) + ["cvar_90_cost_mu"]),
         "small_origin_caveat_noted": True,
@@ -1375,11 +1363,12 @@ def run_rolling_backtest(
         },
         "evaluated_seeds": [int(s) for s in cfg.evaluation.seeds],
         "independent_training_seeds": bool(getattr(cfg.evaluation, "independent_training_seeds", True)),
-        "evaluated_policies": REQUIRED_POLICIES,
+        "evaluated_policies": EVALUATED_POLICIES,
         "origin_evaluations": origin_env_records,
         **bootstrap_meta,
     }
 
+    run_manifest["timing"] = dict(total_backtest_seconds=time.perf_counter()-backtest_started, origins=timing_rows)
     save_json(run_manifest, art_dir / "run_manifest.json")
     return {
         "allocation_results": alloc_df,

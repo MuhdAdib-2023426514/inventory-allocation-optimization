@@ -11,13 +11,13 @@ from inventory_di.config import load_config
 from inventory_di.evaluation.backtest import build_allocation_instance_from_config_df
 
 
-def test_dashboard_cached_bundle_and_pages() -> None:
+def test_dashboard_cached_bundle_and_pages(demo_release_config) -> None:
     assert len(REGISTERED_PAGES) == 5
-    bundle = load_cached_bundle("configs/demo.yaml")
+    bundle = load_cached_bundle(demo_release_config)
     assert bundle["status"] == "OK"
     assert bundle["cfg"].data_mode == "synthetic_demo"
 
-    cfg = load_config("configs/demo.yaml")
+    cfg = load_config(demo_release_config)
     qa_path = Path(cfg.data.artifacts_dir) / "dashboard_qa_bundle.json"
     assert qa_path.exists()
     qa = json.loads(qa_path.read_text(encoding="utf-8"))
@@ -39,6 +39,19 @@ def test_dashboard_cached_bundle_and_pages() -> None:
 
     # Verify M5 bundle when M5 artifacts exist
     m5_bundle = load_cached_bundle("configs/m5.yaml")
-    if Path("artifacts/m5/run_manifest.json").exists():
+    if Path("artifacts/m5_v2/run_manifest.json").exists():
         assert m5_bundle["status"] == "OK"
         assert m5_bundle["cfg"].data_mode == "m5_sales_proxy"
+
+
+def test_dashboard_rejects_changed_artifact_and_invalidates_cache(demo_release_config):
+    cfg = load_config(demo_release_config)
+    path = Path(cfg.data.artifacts_dir) / "summary_metrics.parquet"
+    original = path.read_bytes()
+    assert load_cached_bundle(demo_release_config)["status"] == "OK"
+    try:
+        path.write_bytes(original + b"corrupted")
+        assert load_cached_bundle(demo_release_config)["status"] == "INVALID"
+    finally:
+        path.write_bytes(original)
+    assert load_cached_bundle(demo_release_config)["status"] == "OK"

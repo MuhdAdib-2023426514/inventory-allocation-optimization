@@ -1,0 +1,26 @@
+[
+  {
+    "stage": "prepare",
+    "exit_code": 0,
+    "seconds": 6.816336333002255,
+    "log": "reports/release/intermittent_parallel_prepare.log"
+  },
+  {
+    "stage": "train",
+    "exit_code": 0,
+    "seconds": 106.58538945799955,
+    "log": "reports/release/intermittent_parallel_train.log"
+  },
+  {
+    "stage": "backtest",
+    "exit_code": 0,
+    "seconds": 759.044849291,
+    "log": "reports/release/intermittent_parallel_backtest.log"
+  },
+  {
+    "stage": "report",
+    "exit_code": 0,
+    "seconds": 3.3619770830046036,
+    "log": "reports/release/intermittent_parallel_report.log"
+  }
+]

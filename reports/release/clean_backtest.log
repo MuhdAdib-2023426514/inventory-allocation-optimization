@@ -1,0 +1,62 @@
+{
+  "command": "backtest",
+  "mode": "demo",
+  "data_mode": "synthetic_demo",
+  "num_test_origins": 8,
+  "policies": [
+    {
+      "policy": "equal_allocation",
+      "mean_cost_mu": 53.13125,
+      "mean_regret_mu": 29.40625,
+      "mean_fill_rate": 0.8450755718954248
+    },
+    {
+      "policy": "proportional_allocation",
+      "mean_cost_mu": 52.162499999999994,
+      "mean_regret_mu": 28.4375,
+      "mean_fill_rate": 0.8517853971298663
+    },
+    {
+      "policy": "supervised_pto",
+      "mean_cost_mu": 48.61875,
+      "mean_regret_mu": 24.893750000000004,
+      "mean_fill_rate": 0.8698103154305201
+    },
+    {
+      "policy": "supervised_dro",
+      "mean_cost_mu": 61.46875,
+      "mean_regret_mu": 37.74375,
+      "mean_fill_rate": 0.7853757408760607
+    },
+    {
+      "policy": "dfl_pto",
+      "mean_cost_mu": 53.162499999999994,
+      "mean_regret_mu": 29.4375,
+      "mean_fill_rate": 0.8437546177891446
+    },
+    {
+      "policy": "dfl_dro",
+      "mean_cost_mu": 54.91875,
+      "mean_regret_mu": 31.193749999999998,
+      "mean_fill_rate": 0.8342060066780335
+    },
+    {
+      "policy": "clairvoyant_oracle",
+      "mean_cost_mu": 23.725,
+      "mean_regret_mu": 0.0,
+      "mean_fill_rate": 0.9323039215686274
+    },
+    {
+      "policy": "supervised_stochastic",
+      "mean_cost_mu": 53.20625,
+      "mean_regret_mu": 29.48125,
+      "mean_fill_rate": 0.8402774352494622
+    },
+    {
+      "policy": "dfl_stochastic",
+      "mean_cost_mu": 54.693749999999994,
+      "mean_regret_mu": 30.968749999999996,
+      "mean_fill_rate": 0.8322615622335892
+    }
+  ]
+}

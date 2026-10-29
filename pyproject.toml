@@ -24,6 +24,13 @@ dependencies = [
     "kagglehub>=1.0.3",
 ]
 
+[dependency-groups]
+presentation = ["python-pptx>=1.0.2,<2"]
+qa = [
+    "playwright>=1.64.1",
+    "pymupdf>=1.24,<2",
+]
+
 [project.scripts]
 inventory-di = "inventory_di.cli:main"
 

@@ -1,0 +1,38 @@
+{
+  "demo": {
+    "status": "PASS",
+    "run_id": "demo_v2",
+    "checked_policy_origins": 72,
+    "origins": 8,
+    "seeds": [
+      42,
+      101,
+      202
+    ],
+    "all_allocations_feasible": true,
+    "costs_recompute": true,
+    "summaries_recompute": true,
+    "hashes_match": true,
+    "carryover_conserved": true,
+    "min_regret_mu": 0.0,
+    "min_carryover_regret_mu": 0.0
+  },
+  "m5_intermittent": {
+    "status": "PASS",
+    "run_id": "m5_intermittent_v2",
+    "checked_policy_origins": 108,
+    "origins": 12,
+    "seeds": [
+      42,
+      101,
+      202
+    ],
+    "all_allocations_feasible": true,
+    "costs_recompute": true,
+    "summaries_recompute": true,
+    "hashes_match": true,
+    "carryover_conserved": true,
+    "min_regret_mu": 0.0,
+    "min_carryover_regret_mu": 0.0
+  }
+}

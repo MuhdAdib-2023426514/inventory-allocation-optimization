@@ -46,7 +46,7 @@ def allocate_equal_shares(inst: AllocationInstance) -> SolveResult:
     return SolveResult(
         x=x,
         solver_objective=0.0,
-        solver_status="optimal",
+        solver_status="heuristic_feasible",
         is_feasible=ok,
         violations=viols,
         runtime_seconds=time.perf_counter() - t0,
@@ -104,7 +104,7 @@ def allocate_proportional_shares(
     return SolveResult(
         x=x,
         solver_objective=0.0,
-        solver_status="optimal",
+        solver_status="heuristic_feasible",
         is_feasible=ok,
         violations=viols,
         runtime_seconds=time.perf_counter() - t0,

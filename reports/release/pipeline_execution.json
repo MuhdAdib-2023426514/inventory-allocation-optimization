@@ -1,0 +1,190 @@
+[
+  {
+    "mode": "demo",
+    "stage": "prepare",
+    "command": [
+      "/Users/mac/Desktop/inventory_management/.venv/bin/python",
+      "-m",
+      "inventory_di.cli",
+      "prepare",
+      "--config",
+      "configs/demo.yaml"
+    ],
+    "seconds": 3.8376858749979874,
+    "exit_code": 0,
+    "log": "reports/release/demo_prepare.log"
+  },
+  {
+    "mode": "demo",
+    "stage": "train",
+    "command": [
+      "/Users/mac/Desktop/inventory_management/.venv/bin/python",
+      "-m",
+      "inventory_di.cli",
+      "train",
+      "--config",
+      "configs/demo.yaml",
+      "--model",
+      "all"
+    ],
+    "seconds": 21.805541249999806,
+    "exit_code": 0,
+    "log": "reports/release/demo_train.log"
+  },
+  {
+    "mode": "demo",
+    "stage": "backtest",
+    "command": [
+      "/Users/mac/Desktop/inventory_management/.venv/bin/python",
+      "-m",
+      "inventory_di.cli",
+      "backtest",
+      "--config",
+      "configs/demo.yaml"
+    ],
+    "seconds": 61.38245637500222,
+    "exit_code": 0,
+    "log": "reports/release/demo_backtest.log"
+  },
+  {
+    "mode": "demo",
+    "stage": "report",
+    "command": [
+      "/Users/mac/Desktop/inventory_management/.venv/bin/python",
+      "-m",
+      "inventory_di.cli",
+      "report",
+      "--config",
+      "configs/demo.yaml"
+    ],
+    "seconds": 2.610404874998494,
+    "exit_code": 0,
+    "log": "reports/release/demo_report.log"
+  },
+  {
+    "mode": "m5",
+    "stage": "prepare",
+    "command": [
+      "/Users/mac/Desktop/inventory_management/.venv/bin/python",
+      "-m",
+      "inventory_di.cli",
+      "prepare",
+      "--config",
+      "configs/m5.yaml"
+    ],
+    "seconds": 4.77495908399942,
+    "exit_code": 0,
+    "log": "reports/release/m5_prepare.log"
+  },
+  {
+    "mode": "m5",
+    "stage": "train",
+    "command": [
+      "/Users/mac/Desktop/inventory_management/.venv/bin/python",
+      "-m",
+      "inventory_di.cli",
+      "train",
+      "--config",
+      "configs/m5.yaml",
+      "--model",
+      "all"
+    ],
+    "seconds": 1065.8787674170017,
+    "exit_code": 0,
+    "log": "reports/release/m5_train.log"
+  },
+  {
+    "mode": "m5",
+    "stage": "backtest",
+    "command": [
+      "/Users/mac/Desktop/inventory_management/.venv/bin/python",
+      "-u",
+      "-m",
+      "inventory_di.cli",
+      "backtest",
+      "--config",
+      "configs/m5.yaml"
+    ],
+    "seconds": 2923.557564834,
+    "exit_code": 0,
+    "log": "reports/release/m5_backtest.log"
+  },
+  {
+    "mode": "m5",
+    "stage": "report",
+    "command": [
+      "/Users/mac/Desktop/inventory_management/.venv/bin/python",
+      "-u",
+      "-m",
+      "inventory_di.cli",
+      "report",
+      "--config",
+      "configs/m5.yaml"
+    ],
+    "seconds": 2.989234166999722,
+    "exit_code": 0,
+    "log": "reports/release/m5_report.log"
+  },
+  {
+    "mode": "m5_intermittent",
+    "stage": "prepare",
+    "command": [
+      "/Users/mac/Desktop/inventory_management/.venv/bin/python",
+      "-m",
+      "inventory_di.cli",
+      "prepare",
+      "--config",
+      "configs/m5_intermittent.yaml"
+    ],
+    "seconds": 6.816336333002255,
+    "exit_code": 0,
+    "log": "reports/release/m5_intermittent_prepare.log"
+  },
+  {
+    "mode": "m5_intermittent",
+    "stage": "train",
+    "command": [
+      "/Users/mac/Desktop/inventory_management/.venv/bin/python",
+      "-m",
+      "inventory_di.cli",
+      "train",
+      "--config",
+      "configs/m5_intermittent.yaml",
+      "--model",
+      "all"
+    ],
+    "seconds": 106.58538945799955,
+    "exit_code": 0,
+    "log": "reports/release/m5_intermittent_train.log"
+  },
+  {
+    "mode": "m5_intermittent",
+    "stage": "backtest",
+    "command": [
+      "/Users/mac/Desktop/inventory_management/.venv/bin/python",
+      "-m",
+      "inventory_di.cli",
+      "backtest",
+      "--config",
+      "configs/m5_intermittent.yaml"
+    ],
+    "seconds": 759.044849291,
+    "exit_code": 0,
+    "log": "reports/release/m5_intermittent_backtest.log"
+  },
+  {
+    "mode": "m5_intermittent",
+    "stage": "report",
+    "command": [
+      "/Users/mac/Desktop/inventory_management/.venv/bin/python",
+      "-m",
+      "inventory_di.cli",
+      "report",
+      "--config",
+      "configs/m5_intermittent.yaml"
+    ],
+    "seconds": 3.3619770830046036,
+    "exit_code": 0,
+    "log": "reports/release/m5_intermittent_report.log"
+  }
+]

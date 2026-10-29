@@ -1,139 +1,67 @@
-# Methodology: Decision-Focused & Distributionally Robust Inventory Allocation
+# Methodology — corrected v2 experiments
 
-**Authoritative specification:** [`AGENTS.md`](../AGENTS.md)
+This is a retrospective inventory decision experiment using M5 observed sales as a demand proxy and synthetic operating economics. It is not evidence of actual savings at Walmart or MR.DIY.
 
----
+## One-week decision
 
-## 1. Problem Formulation & Exact Cost Accounting (`AGENTS.md` §5)
+For integer shipment x, observed demand proxy D and opening stock I, realized cost is
 
-Let $S$ denote the set of retail stores and $P$ denote the set of SKUs (`cat_id == "HOUSEHOLD"`). At a weekly decision origin $t_0$:
-- $D_{sp} \in \mathbb{Z}_{\ge 0}$: next-7-calendar-day customer demand proxy at store $s \in S$ for SKU $p \in P$.
-- $I_{sp} \in \mathbb{Z}_{\ge 0}$: opening store on-hand stock at origin $t_0$.
-- $W_p \in \mathbb{Z}_{\ge 0}$: central warehouse supply available to ship for SKU $p$.
-- $K_{sp} \in \mathbb{Z}_{\ge 0}$: per-store–SKU weekly allocation cap.
-- $C_s \in \mathbb{Z}_{\ge 0}$: total store stock capacity across all SKUs ($\sum_{p \in P} (I_{sp} + x_{sp}) \le C_s$).
-- $b_{sp} \ge 0, h_{sp} \ge 0, t_{sp} \ge 0$: unit shortage penalty, holding cost, and shipping cost in generic Monetary Units (**MU/unit**).
+`sum[b * max(D-I-x, 0) + h * max(I+x-D, 0) + t*x]`.
 
-### Decision Variables and Feasibility Set $\mathcal{X}$
-The allocation decision $x_{sp} \in \mathbb{Z}_{\ge 0}$ is the integer number of units of SKU $p$ shipped from the warehouse to store $s$ at origin $t_0$:
+Constraints are warehouse supply per SKU, shipment caps per store/SKU, and total store stock capacity `sum_p(I+x) <= C`. Costs are synthetic MU/unit. Feasibility and cost are recomputed independently from allocations. Exact MIP solves require accepted optimal status and zero reported relative gap; a failed solve raises an error. Equal/proportional policies are labeled feasible heuristics rather than cost-optimal solutions.
 
-$$
-\mathcal{X} = \left\{ x \in \mathbb{Z}_{\ge 0}^{|S| \times |P|} \;\middle|\;
-0 \le x_{sp} \le K_{sp} \;\forall s,p; \quad
-\sum_{s \in S} x_{sp} \le W_p \;\forall p; \quad
-\sum_{p \in P} (I_{sp} + x_{sp}) \le C_s \;\forall s
-\right\}
-$$
+## Chronology and contracts
 
-### Exact Realized One-Week Cost
-For any feasible integer allocation $x \in \mathcal{X}$ and realized demand vector $D$, the one-week realized cost is:
+Every row predicts seven calendar days after its forecast origin. Demand lags/rolling features use completed weeks; target-week calendar events are known in advance. Prices are forward-filled within sorted item/store histories with a fixed missing fallback and lagged before use. Calendar/price joins require unique keys and preserve row counts. Whole-origin train/validation/test blocks prevent random-row mixing.
 
-$$
-C(x, D) = \sum_{s \in S} \sum_{p \in P} \Big[
-b_{sp} \max(D_{sp} - I_{sp} - x_{sp}, 0)
-+ h_{sp} \max(I_{sp} + x_{sp} - D_{sp}, 0)
-+ t_{sp} x_{sp}
-\Big]
-$$
+Cohorts, inventory assumptions, support recommendations and tail parameters use training history. Feature normalization is fitted on train. Temperature, lambda selection and risk settings use validation. No test target is used for these fits. The test periods were inspected in v1; the corrected v2 evaluation is therefore retrospective, not a new confirmatory holdout.
 
-Fulfilled demand is $\min(D_{sp}, I_{sp} + x_{sp})$ and unmet demand is $\max(D_{sp} - I_{sp} - x_{sp}, 0)$.
+Cohort filters and daily ADI values are in the lineage manifest. Regular selection uses mean/nonzero-rate filters, not a claimed ADI <= 1.25 threshold. Intermittent does not automatically mean lumpy.
 
----
+## Matched demand learning
 
-## 2. Marginal-Unit Binary Encoding & Incremental Cost Identity (`AGENTS.md` §6)
+A per-SKU neural PMF predicts demand bins 0..H plus an explicit overflow bin. H covers the training-derived support recommendation, the configured support floor, and all fixed-training allocation thresholds. Actual targets are never clipped for economic evaluation. Overflow targets map to one categorical bin only for NLL indexing.
 
-Standard `SPOPlus` in PyEPO requires uncertain parameters to appear **linearly in the objective function** over an **instance-invariant feasible set**. In the raw formulation $C(x, D)$, random demand $D_{sp}$ sits inside $\max(\cdot)$ terms (or on the right-hand side of linearization constraints $u_{sp} \ge D_{sp} - I_{sp} - x_{sp}$).
+The conditional overflow excess is geometric on 1,2,... with training-estimated mean m (default two when no excess is observed). Thus `P(excess >= k) = (1-1/m)^(k-1)`. Survival, inverse CDF, expectation and quantiles use this same distribution. The overflow probability is learned; the conditional tail shape is a pooled training assumption.
 
-To make the objective strictly linear in the decision variables with fixed constraints for each SKU $p$:
-1. Introduce binary marginal-unit variables $y_{s,k} \in \{0, 1\}$ for store $s \in S$ and incremental unit $k \in \{1, \dots, K_s\}$, where $y_{s,k} = 1$ iff at least $k$ units are shipped to store $s$.
-2. Enforce prefix ordering constraints and the per-SKU warehouse supply budget:
-   $$y_{s, k+1} \le y_{s, k} \quad \forall s \in S, \; k = 1, \dots, K_s - 1, \qquad \sum_{s \in S} \sum_{k=1}^{K_s} y_{s, k} \le W_p$$
-   Under prefix ordering, $x_s = \sum_{k=1}^{K_s} y_{s, k}$.
-3. Define the true incremental realized cost of the $k$-th unit shipped to store $s$ under realized demand $d_s$:
-   $$
-   c_{\text{true}}[s, k; d_s] =
-   \begin{cases}
-   t_s - b_s & \text{if } d_s \ge I_s + k \quad (\text{unit prevents 1 unit of shortage}) \\
-   t_s + h_s & \text{if } d_s < I_s + k \quad (\text{unit becomes 1 unit of excess stock})
-   \end{cases}
-   $$
-4. **Exact Decomposition Identity** (verified across randomized instances in [`tests/test_cost_identity.py`](../tests/test_cost_identity.py)):
-   $$C(x, d) = C(0, d) + \sum_{s \in S} \sum_{k=1}^{K_s} c_{\text{true}}[s, k; d_s] \, y_{s, k}$$
-   Because $C(0, d) = \sum_{s \in S} b_s \max(d_s - I_s, 0)$ does not depend on $x$, minimizing $\sum_{s,k} c_{\text{true}}[s, k; d_s] y_{s,k}$ is mathematically equivalent to minimizing $C(x, d)$.
+Supervised and DFL models share architecture, initial weights, optimizer, minibatch order, epochs and checkpoint rule. Supervised uses NLL only. DFL uses `mean_NLL + lambda * SPOPlus / number_of_marginal_units`. Positive lambda candidates define the DFL family; lambda zero remains the matched baseline even if it wins.
 
----
+The fixed joint multi-SKU PyEPO model uses prefix binary variables y[s,p,k], fixed warehouse budgets and shared store capacity. Realized marginal coefficients are `t-b` when `D >= I+k`, otherwise `t+h`. Therefore `C(x,D) = C(0,D) + dot(c_true,y)`. Predicted coefficients are `t+h-(b+h)*P(D >= I+k)`.
 
-## 3. Discrete Demand PMF, Survival Mapping & Decision-Focused Learning (`AGENTS.md` §6)
+A true SPO+ backward pass and matched parameter-update smoke check verify optimizer participation. Raw gradient norms are retained without a positive floor. Validation checkpoints minimize mean NLL plus 0.15 times decision regret per SKU. After restoring the selected checkpoint, temperature is calibrated on validation and final decision regret is recomputed on the calibrated models.
 
-### Discrete PMF with Explicit Overflow Bin
-For each SKU $p$, [`DiscreteDemandPMFNet`](../src/inventory_di/models/distributions.py) predicts a discrete categorical PMF over $\{0, 1, \dots, H\}$ plus an explicit `overflow > H` bin ($H + 2$ total outputs) from strictly pre-origin standardized features:
+## Scenarios and risk
 
-$$p_\theta(d \mid \text{features}_{s, t_0}), \quad d \in \{0, 1, \dots, H, \text{overflow} > H\}$$
+Training-only rank-bootstrap uniforms represent cross-store/SKU dependence. Reproducible independent randomization of ties avoids assigning zero-demand ties the same chronological ordering across series. Inverse CDF maps uniforms into the calibrated PMF including its geometric tail. No scenario-only multiplicative scaling is applied. Common uniforms do not imply identical demand draws when forecast PMFs differ.
 
-The support bound $H$ and the mean excess above $H$ for tail sampling are estimated **strictly on `split == "train"`**. Realized held-out evaluation demand $D_{sp}$ is **never clipped at $H$**.
+For nominal scenario probabilities p and losses L, the ambiguity set is
 
-### Differentiable Survival-to-Marginal-Cost Mapping
-For each store $s$ and unit threshold $k = 1, \dots, K_s$, the survival probability is:
+`P_alpha = {w: sum(w)=1, 0 <= w[j] <= p[j]/(1-alpha)}`.
 
-$$q_\theta[s, k] = P_\theta(D_s \ge I_s + k \mid \text{features}) = \sum_{d = I_s + k}^{H} p_\theta(d \mid \text{features}) + p_\theta(\text{overflow} > H \mid \text{features})$$
+Its worst expected loss is exactly finite-scenario CVaR_alpha. The robust objective is `(1-risk_weight)*E[L] + risk_weight*CVaR_alpha(L)`. Alpha zero or weight zero recovers risk-neutral expected cost. This is probability-reweighting DRO, not Wasserstein DRO.
 
-Taking the expectation of $c_{\text{true}}[s, k; D_s]$ under $p_\theta$ yields the predicted marginal unit cost vector:
+Each family has a scenario risk-neutral diagnostic policy using the same scenarios as its DRO policy. These isolate the risk preference from finite-sampling effects. Main model-implied comparison metrics evaluate all allocations on common supervised reference scenarios at alpha 0.90. Optimization itself uses the appropriate model-family scenarios and validation-selected risk settings. Realized costs use held-out observed sales, never the model's sampled demand.
 
-$$\hat{c}_\theta[s, k] = t_s + h_s - (b_s + h_s) \, q_\theta[s, k]$$
+## Carryover state/action contract
 
-Because $q_\theta[s, k+1] \le q_\theta[s, k]$ (non-negative PMF probabilities), $\hat{c}_\theta[s, k]$ is guaranteed non-decreasing in $k$ (convex piecewise-linear expected cost in $x_s$).
+Each week renews the synthetic warehouse dispatch budget W. This is an external replenishment assumption, not a model of finite central-warehouse stock depletion.
 
-### Supervised PTO vs. DFL (Joint NLL + PyEPO `SPOPlus`)
-- **`supervised_pto` (`lambda_DFL = 0`):** Trained with proper categorical negative log-likelihood ($\text{NLL}$), temperature-calibrated on `split == "val"`, and passed into the nominal marginal-cost MILP at test time.
-- **`dfl_pto` / `dfl_dro` (`lambda_DFL > 0`):** Trained end-to-end using PyEPO's `SPOPlus` surrogate loss over [`FixedFeasibleMarginalAllocationModel`](../src/inventory_di/optimization/pyepo_fixed.py) (`optOmoModel` with `appsi_highs`):
-  $$\mathcal{L}(\theta) = \text{NLL}(\theta) + \lambda_{\text{DFL}} \cdot \frac{1}{M} \mathcal{L}_{\text{SPO}+}\big(\hat{c}_\theta, c_{\text{true}}, y^*, z^*\big)$$
-  Combining $\text{NLL}$ with $\text{SPO}+$ preserves probability calibration (needed when sampling scenarios for DRO) while steering the PMF survival thresholds toward lower downstream allocation regret.
+1. Opening store stock and due pipeline are known; deferred deliveries remain queued.
+2. Dispatch is integer, nonnegative and bounded by W and per-store/SKU K. With L=0 it is due immediately; with L=1 it enters the next week's pipeline.
+3. Admissions are explicit integer actions, cannot exceed queued units, and cannot exceed remaining store stock capacity.
+4. Fulfillment is exactly `min(demand, stock after admissions)`. Closing store/deferred balances and the pipeline are conserved per SKU.
+5. Store stock and deferred stock incur holding; dispatch incurs shipping. Scheduled pipeline has no holding charge. Terminal inventory has zero salvage value. Orders arriving after the horizon are zero.
 
----
+Normal policies use a deterministic proportional admission rule. The clairvoyant horizon optimizer may choose admissions within the same action space using future demand. Its explicit store/deferred/pipeline balances and exact minimum-fulfillment formulation are independently replayed through the simulator. Tiny exhaustive dynamic programs verify its optimum and lower-bound property. Hindsight regret is never clipped to hide a negative value.
 
-## 4. Distributionally Robust Optimization via Probability-Reweighting Ambiguity Set (`AGENTS.md` §7)
+Nominal carryover coefficients are recomputed for current opening stock. For L=1, stock and arrival-week features are projected from currently available information, including due/deferred stock. Moving averages, carried calendar/event fields and future residual stock are approximate projections rather than a separately trained lead-time model.
 
-### Scenario Generation & Training-Only Empirical Copula
-At each test origin $t_0$, we draw $N$ joint demand scenarios $D^{(1)}, \dots, D^{(N)} \in \mathbb{Z}_{\ge 0}^{|S| \times |P|}$ from either the supervised PMFs (`supervised_dro`) or the DFL-trained PMFs (`dfl_dro`). Cross-store and cross-SKU rank dependence is preserved via [`EmpiricalCopulaScenarioGenerator`](../src/inventory_di/models/distributions.py), which bootstraps historical weekly empirical rank vectors fitted **exclusively on `split == "train"`** using common random numbers across policies.
+## Service targets
 
-### Probability-Reweighting Ambiguity Set $\mathcal{P}_\alpha$ and $\text{CVaR}_\alpha$ Equivalence
-Given scenario losses $L_j(x) = C(x, D^{(j)})$ and nominal uniform probabilities $p_j = 1/N$, we define the **probability-reweighting ambiguity set** for $\alpha \in [0, 1)$:
+Portfolio expected fill is expected fulfilled units divided by expected demand; zero demand has fill one. Hard mode first minimizes cost subject to the target with zero slack. If infeasible, a separate solve maximizes expected fulfillment; a third cost solve retains that maximum. Soft mode minimizes cost plus a chosen service shortfall penalty. Expected unfilled units below target are not a required warehouse replenishment quantity and do not identify a bottleneck by themselves.
 
-$$
-\mathcal{P}_\alpha = \left\{ w \in \mathbb{R}_{\ge 0}^N \;\middle|\; \sum_{j=1}^N w_j = 1, \quad 0 \le w_j \le \frac{p_j}{1 - \alpha} \;\forall j = 1, \dots, N \right\}
-$$
+## Evaluation
 
-By Rockafellar–Uryasev duality, worst-case expected loss over $\mathcal{P}_\alpha$ is mathematically identical to Conditional Value-at-Risk ($\text{CVaR}_\alpha$):
+Seven required policies plus two scenario risk-neutral ablations share targets and operating assumptions. Three independent training seeds use equal budgets and their own validation calibration/risk selection. Paired moving-block bootstrap resamples chronological origins, not correlated store/SKU rows. Cost, regret, fill, tail cost, solver gaps and timings are recorded separately. Short horizons make intervals descriptive and tail estimates unstable.
 
-$$
-\max_{w \in \mathcal{P}_\alpha} \sum_{j=1}^N w_j L_j(x)
-= \text{CVaR}_\alpha(L(x))
-= \min_{\eta \in \mathbb{R}, \, z \in \mathbb{R}_{\ge 0}^N} \left\{ \eta + \frac{1}{1 - \alpha} \sum_{j=1}^N p_j z_j \;\middle|\; z_j \ge L_j(x) - \eta \;\forall j \right\}
-$$
-
-> **Important Distinction:** This formulation is explicit scenario-probability-reweighting / $\text{CVaR}_\alpha$ DRO. It is **not** Wasserstein DRO.
-
-### Risk-Trade-Off MILP Objective
-For $\text{risk\_weight} \in [0, 1]$, [`solve_scenario_reweighting_dro_milp`](../src/inventory_di/optimization/dro.py) solves the integer linear program:
-
-$$
-\min_{x \in \mathcal{X}, \, \eta, \, z \ge 0, \, u \ge 0, \, v \ge 0} \;
-(1 - \text{risk\_weight}) \sum_{j=1}^N p_j L_j(x) + \text{risk\_weight} \left( \eta + \frac{1}{1 - \alpha} \sum_{j=1}^N p_j z_j \right)
-$$
-
-- When $\text{risk\_weight} = 0$ (or $\alpha = 0$), the problem reduces to risk-neutral stochastic expected-cost minimization.
-- When $\text{risk\_weight} > 0$ and $\alpha > 0$, the allocation hedges against worst-tail demand surges across scenarios.
-
----
-
-## 5. Seven-Policy Evaluation Protocol (`AGENTS.md` §8, §9)
-
-At every held-out test origin $t_0$, all 7 policies are evaluated on the **exact same feasible set $\mathcal{X}$, opening stock $I_{sp}$, warehouse supply $W_p$, store capacities $C_s$, and held-out demand proxy $D_{\text{actual}}$**:
-1. `equal_allocation`: Deterministic round-robin near-equal warehouse shares respecting $K_{sp}$ and $C_s$.
-2. `proportional_allocation`: Proportional to trailing 8-week mean demand strictly prior to $t_0$, with largest-remainder rounding and feasible caps.
-3. `supervised_pto`: NLL-trained PMF $\rightarrow$ nominal expected marginal-cost MILP.
-4. `supervised_dro`: NLL-trained PMF $\rightarrow$ empirical copula scenarios $\rightarrow$ reweighting-DRO MILP.
-5. `dfl_pto`: Joint NLL+SPO+ PMF $\rightarrow$ nominal expected marginal-cost MILP.
-6. `dfl_dro`: Joint NLL+SPO+ PMF $\rightarrow$ empirical copula scenarios $\rightarrow$ reweighting-DRO MILP.
-7. `clairvoyant_oracle`: Hindsight MILP solved with $D_{\text{actual}}$ known, used **solely** to compute non-negative hindsight decision regret:
-   $$\text{Regret}(x_{\text{policy}}, D_{\text{actual}}) = C(x_{\text{policy}}, D_{\text{actual}}) - C(x_{\text{oracle}}, D_{\text{actual}}) \ge 0$$
+Risk frontiers are descriptive test diagnostics, not hyperparameter selection evidence. First-origin sample-count, shortage-ratio, tail-mean and frozen-PMF support-rebin sensitivities do not establish general robustness. Full runs and source/input/checkpoint hashes are identified in the release manifest.

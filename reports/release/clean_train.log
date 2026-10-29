@@ -1,0 +1,10 @@
+{
+  "command": "train",
+  "mode": "demo",
+  "data_mode": "synthetic_demo",
+  "model_choice": "all",
+  "checkpoints": {
+    "supervised_ckpt_sha256": "28f1222dcb0cb5e5ef03d2881a2dcaf3797f57e66cd24ad60997bc968c41d8e0",
+    "dfl_ckpt_sha256": "c2c3af691da1feea5b5d9aa6ffb8a57d386f7b714b45c0f3108cfdcfd6393604"
+  }
+}

@@ -447,6 +447,29 @@ def train_joint_multi_sku_dfl_models(
         for m in models
     ]
 
+    if not np.isfinite(joint_grad_norms).all() or sum(joint_grad_norms) <= 0:
+        raise RuntimeError("Joint SPO+ gradient participation check failed")
+    # A real matched SGD update smoke: NLL versus NLL+SPO+, same initial weights.
+    spo_gradients = [[p.grad.detach().clone() if p.grad is not None else torch.zeros_like(p)
+                      for p in m.parameters()] for m in models]
+    smoke_differences = []
+    import copy
+    for p_idx, m in enumerate(models):
+        left, right = copy.deepcopy(m), copy.deepcopy(m)
+        for candidate, add_spo in [(left, False), (right, True)]:
+            candidate.zero_grad()
+            loss = compute_discrete_nll_loss(candidate.forward_logits(train_x_list[p_idx][:b_sz]),
+                                             train_d_list[p_idx][:b_sz], support_h)
+            loss.backward()
+            if add_spo:
+                for param, gradient in zip(candidate.parameters(), spo_gradients[p_idx]):
+                    param.grad += gradient / max(1, joint_opt.num_cost)
+            torch.optim.SGD(candidate.parameters(), lr=learning_rate).step()
+        smoke_differences.append(float(torch.linalg.vector_norm(torch.cat([
+            (a-b).detach().flatten() for a,b in zip(left.parameters(), right.parameters())])).item()))
+    if sum(smoke_differences) <= 0:
+        raise RuntimeError("Joint SPO+ did not change matched parameter updates")
+
     # Re-initialize with exact seeds for clean training
     models = []
     all_params = []
@@ -469,6 +492,7 @@ def train_joint_multi_sku_dfl_models(
     best_val_score = float("inf")
     best_states = [{k: v.detach().clone() for k, v in m.state_dict().items()} for m in models]
 
+    best_epoch = 0
     for epoch in range(1, epochs + 1):
         for m in models:
             m.train()
@@ -549,7 +573,10 @@ def train_joint_multi_sku_dfl_models(
             joint_opt.setObj(val_c_joint[t_i])
             sol_pred, _ = joint_opt.solve()
             realized_inc = float(np.dot(val_tc[t_i], sol_pred))
-            joint_regrets.append(max(0.0, realized_inc - float(val_to[t_i])))
+            regret = realized_inc - float(val_to[t_i])
+            if regret < -1e-5:
+                raise AssertionError("Negative joint validation regret")
+            joint_regrets.append(regret)
         mean_joint_val_regret = float(np.mean(joint_regrets)) / float(P)
 
         val_diags = [
@@ -559,6 +586,7 @@ def train_joint_multi_sku_dfl_models(
         mean_val_nll = float(np.mean([d["nll"] for d in val_diags]))
         val_composite = mean_val_nll + 0.15 * mean_joint_val_regret
         if val_composite < best_val_score:
+            best_epoch = epoch
             best_val_score = val_composite
             best_states = [{k: v.detach().clone() for k, v in m.state_dict().items()} for m in models]
 
@@ -576,23 +604,41 @@ def train_joint_multi_sku_dfl_models(
                 }
             )
 
+    calibration_infos = []
+    for p_idx in range(P):
+        models[p_idx].load_state_dict(best_states[p_idx])
+        calibration_infos.append(calibrate_temperature_on_validation(models[p_idx], val_x_list[p_idx], val_d_list[p_idx]))
+    with torch.no_grad():
+        final_costs = torch.cat([
+            compute_survival_and_marginal_costs_torch(models[p].predict_pmf(val_x_list[p]),
+                I_sp[:,p], K_sp[:,p], b_sp[:,p], h_sp[:,p], t_sp[:,p], tail_mean_excess)[1]
+            for p in range(P)], dim=-1).numpy()
+    final_regrets = []
+    for t_idx, costs in enumerate(final_costs):
+        joint_opt.setObj(costs)
+        solution, _ = joint_opt.solve()
+        final_regrets.append(float(np.dot(val_oracle["true_costs"][t_idx], solution)-val_oracle["true_objs"][t_idx]))
+    if min(final_regrets) < -1e-5:
+        raise AssertionError("Negative calibrated validation regret")
+    final_regret = float(np.mean(final_regrets)) / P
     artifacts: dict[str, SKUForecastArtifact] = {}
     for p_idx, sku in enumerate(skus):
-        models[p_idx].load_state_dict(best_states[p_idx])
-        cal_info = calibrate_temperature_on_validation(
-            models[p_idx], val_x_list[p_idx], val_d_list[p_idx]
-        )
+        cal_info = calibration_infos[p_idx]
         val_final = evaluate_pmf_forecast_diagnostics(
             models[p_idx], val_x_list[p_idx], val_d_list[p_idx], tail_mean_excess
         )
         cal_info.update(val_final)
-        cal_info["val_decision_regret_mu"] = histories[p_idx][-1]["val_decision_regret_mu"]
+        cal_info["val_decision_regret_mu"] = final_regret
+        cal_info["best_epoch"] = best_epoch
+        cal_info["selection_rule"] = "mean validation NLL + 0.15 * joint regret per SKU"
+        cal_info["epochs_budget"] = epochs
+        cal_info["batch_size"] = batch_size
         cal_info["joint_multi_sku_dfl_aligned"] = True
 
         artifacts[sku] = SKUForecastArtifact(
             sku_id=sku,
             stores=list(stores),
-            model_type="dfl",
+            model_type="dfl" if lambda_dfl > 0 else "supervised",
             lambda_dfl=float(lambda_dfl),
             support_h=support_h,
             tail_mean_excess=tail_mean_excess,
@@ -602,8 +648,9 @@ def train_joint_multi_sku_dfl_models(
             history=histories[p_idx],
             calibration_info=cal_info,
             gradient_check={
-                "grad_norm_pure_spoplus": max(1e-4, joint_grad_norms[p_idx]),
+                "grad_norm_pure_spoplus": joint_grad_norms[p_idx],
                 "joint_multi_sku_polytope": 1.0,
+                "param_diff_l2_vs_nll": smoke_differences[p_idx],
             },
         )
     return artifacts

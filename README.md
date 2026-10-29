@@ -1,108 +1,81 @@
 # Decision-Focused and Distributionally Robust Inventory Allocation
 
-**Subtitle:** Decision-Oriented Learning for Risk-Aware Multi-Store Stock Allocation  
-**Use Case:** Technical Case Study for *Data Scientist Executive (Decision Intelligence)*, MR. D.I.Y.  
-**Authoritative Specification:** [`AGENTS.md`](./AGENTS.md)
+A CPU-based interview research prototype for decision intelligence: learn weekly demand distributions, allocate scarce warehouse units, and compare realized inventory cost against strong baselines. M5 sales are a demand proxy; inventory and operating costs are synthetic MU. No actual retailer savings or enterprise deployment readiness are claimed.
 
----
+The corrected implementation and verification plan are in [docs/INTERVIEW_READINESS_IMPLEMENTATION_PLAN.md](docs/INTERVIEW_READINESS_IMPLEMENTATION_PLAN.md). Current evidence and release limitations are in [docs/INTERVIEW_READINESS_REPORT.md](docs/INTERVIEW_READINESS_REPORT.md). Historical v1 claims are archived separately.
 
-## 1. Overview & Core Research Question
+## Install
 
-> **Core Question:** Does decision-focused learning (DFL) combined with distributionally robust optimization (DRO) improve actual inventory allocation cost and decision regret relative to conventional forecast-then-optimize methods?
-
-This repository implements an end-to-end, CPU-first, reproducible Decision Intelligence pipeline and offline Streamlit experiment dashboard that:
-1. Ingests either **Walmart M5** `HOUSEHOLD` daily unit sales (`mode=m5`, `data_mode="m5_sales_proxy"`) or a fully self-contained, visibly labeled **Synthetic Demo** fixture (`mode=demo`, `data_mode="synthetic_demo"`, badge `DEMO / SYNTHETIC`).
-2. Enforces strict chronological whole-origin splits (`train` $\rightarrow$ `val` $\rightarrow$ `test`) with zero temporal leakage.
-3. Trains a discrete demand distribution neural network ($0 \dots H$ plus explicit `overflow > H` bin) under both **Supervised NLL** (`supervised_pto`) and **Genuine Decision-Focused Learning** (`NLL + lambda_DFL * SPOPlus` via PyEPO and HiGHS over a fixed-feasible marginal-unit allocation model).
-4. Maps learned demand distributions through a training-only empirical rank-bootstrap copula into an explicit **scenario-probability-reweighting DRO** ($\text{CVaR}_\alpha$ ambiguity set $\mathcal{P}_\alpha = \{w \ge 0 : \sum w_j = 1, w_j \le p_j/(1-\alpha)\}$) MILP solver.
-5. Evaluates all **7 required policies** apples-to-apples across rolling out-of-sample test origins (`equal_allocation`, `proportional_allocation`, `supervised_pto`, `supervised_dro`, `dfl_pto`, `dfl_dro`, `clairvoyant_oracle`).
-
----
-
-## 2. Environment Setup (Python 3.12 + Open-Source MILP Stack)
-
-Using [`uv`](https://docs.astral.sh/uv/) (recommended) or standard `venv + pip`:
+Use Python 3.11 or 3.12; the verified local runtime and dependency versions are recorded in the release evidence. From the project root:
 
 ```bash
-# Option A: Using uv (uses Python 3.12 and uv.lock)
-uv sync
-
-# Option B: Using standard venv + pip
-python3.12 -m venv .venv
-.venv/bin/pip install -e .
+uv sync --locked --group presentation --group qa
+uv run python -m inventory_di.cli doctor
 ```
 
-Verify the environment, HiGHS solver, mandatory 2-store toy mathematical oracle, and PyEPO `SPOPlus` backward gradient pass:
+Alternatively create/activate a Python virtual environment, then install the package. The locked uv workflow is the reproducible reference; a plain editable pip install resolves the version ranges in `pyproject.toml`.
 
 ```bash
-.venv/bin/python -m inventory_di.cli doctor
+python -m venv .venv
+# Activate using your platform's virtual-environment command.
+python -m pip install -e .
+python -m inventory_di.cli doctor
 ```
 
----
+After activation, the `python` and `streamlit` commands below work across platforms. Installation/preparation may need downloads; the prepared dashboard runs locally from cached artifacts without proprietary APIs, GPUs or commercial solver licenses.
 
-## 3. Reproducible CLI Workflow
-
-### A. Synthetic Demo Mode (`DEMO / SYNTHETIC` — Runs Out-of-the-Box)
+## Synthetic demo
 
 ```bash
-.venv/bin/python -m inventory_di.cli doctor
-.venv/bin/python -m inventory_di.cli make-demo --config configs/demo.yaml
-.venv/bin/python -m inventory_di.cli prepare --config configs/demo.yaml
-.venv/bin/python -m inventory_di.cli train --config configs/demo.yaml --model all
-.venv/bin/python -m inventory_di.cli backtest --config configs/demo.yaml
-.venv/bin/python -m inventory_di.cli report --config configs/demo.yaml
+python -m inventory_di.cli make-demo --config configs/demo.yaml
+python -m inventory_di.cli prepare --config configs/demo.yaml
+python -m inventory_di.cli train --config configs/demo.yaml --model all
+python -m inventory_di.cli backtest --config configs/demo.yaml
+python -m inventory_di.cli report --config configs/demo.yaml
 ```
 
-*(Add `--quick` to `train` or `backtest` for a fast smoke budget.)*
+For a smaller smoke budget, add `--quick` consistently to prepare/train/backtest/report. Quick and standard profiles use different run IDs and directories. Standard configs target `demo_v2`, `m5_v2` and `m5_intermittent_v2`; old v1 outputs are historical.
 
-### B. Walmart M5 Modes (`data_mode="m5_sales_proxy"` — Regular & Intermittent Regimes)
+## M5
 
-Per `AGENTS.md` §1.10 & §4, raw M5 competition files are not committed to Git. To run M5 mode:
-1. Accept competition rules and download the dataset from [Kaggle M5 Forecasting — Accuracy](https://www.kaggle.com/competitions/m5-forecasting-accuracy/data).
-2. Place `calendar.csv`, `sell_prices.csv`, and `sales_train_evaluation.csv` (or `sales_train_validation.csv`) into `data/raw/m5/`.
-3. Execute the pipeline for the **Regular-Selling Cohort (`configs/m5.yaml`, `demand_regime="regular"`, `ADI <= 1.25`)** and/or the **Intermittent/Lumpy Cohort (`configs/m5_intermittent.yaml`, `demand_regime="intermittent"`, `ADI >= 1.35`)**:
+Accept the [Kaggle M5 competition rules](https://www.kaggle.com/competitions/m5-forecasting-accuracy/data), download the files yourself, and place `calendar.csv`, `sell_prices.csv`, and `sales_train_evaluation.csv` (or the shorter `sales_train_validation.csv`) in `data/raw/m5/`. Raw data are ignored by Git.
+
+Run the same prepare/train/backtest/report commands with `configs/m5.yaml` or `configs/m5_intermittent.yaml`. Cohorts use training-only mean/nonzero-rate filters. Their actual daily ADI values and chosen IDs are in the lineage manifest; an ADI <= 1.25 threshold is not assumed. Both M5 modes include 5 stores, 10 selected HOUSEHOLD SKUs and chronological weekly origins.
+
+To execute all corrected standard runs sequentially:
 
 ```bash
-# Regular-selling M5 HOUSEHOLD SKUs (5 stores x 10 SKUs)
-.venv/bin/python -m inventory_di.cli prepare --config configs/m5.yaml
-.venv/bin/python -m inventory_di.cli train --config configs/m5.yaml --model all
-.venv/bin/python -m inventory_di.cli backtest --config configs/m5.yaml
-.venv/bin/python -m inventory_di.cli report --config configs/m5.yaml
-
-# Intermittent/lumpy M5 HOUSEHOLD SKUs (5 stores x 10 SKUs)
-.venv/bin/python -m inventory_di.cli prepare --config configs/m5_intermittent.yaml
-.venv/bin/python -m inventory_di.cli train --config configs/m5_intermittent.yaml --model all
-.venv/bin/python -m inventory_di.cli backtest --config configs/m5_intermittent.yaml
-.venv/bin/python -m inventory_di.cli report --config configs/m5_intermittent.yaml
+python scripts/run_release.py
 ```
 
-### C. Launch the Offline Streamlit Decision-Experiment Dashboard
+Training includes matched joint lambda ablations and independent seeds with equal budgets. Runs can take substantial CPU time. Stage timings and logs are in `reports/release/`; no fixed few-second regeneration promise is made. Validated train/backtest stages are reused when their configuration, inputs, outputs and scientific-source hashes match. Use a new run ID for a deliberate independent rerun.
+
+## Dashboard and presentation
 
 ```bash
-PYTHONPATH=src .venv/bin/streamlit run app/streamlit_app.py
+streamlit run app/streamlit_app.py --server.port 8511 --server.headless true --browser.gatherUsageStats false
+python scripts/generate_presentation_deck.py
 ```
 
-### D. Run Automated Tests, Linter & Codex Verification Skills
+Open `http://localhost:8511`. Pages A–E show provenance, models, allocations, risk/service controls and evidence. The UI does not retrain. Expected cost, model CVaR and realized test cost are separated; synthetic uplift is labeled accordingly. Bundle hashes/configuration are validated, and changed files invalidate the cache.
+
+Use [docs/PRESENTATION_GUIDE.md](docs/PRESENTATION_GUIDE.md), [speaker notes](docs/PRESENTATION_SPEAKER_NOTES.md), and the [offline demo guide](docs/OFFLINE_DEMO_GUIDE.md). PowerPoint, HTML and Markdown share one artifact-derived content source. Browser QA also exports a local PDF fallback.
+
+## Verification
 
 ```bash
-.venv/bin/pytest -q
-.venv/bin/ruff check .
-
-# Run deterministic Codex skill verifiers
-.venv/bin/python .agents/skills/optimization-verification/scripts/verify_optimization.py --self-test
-.venv/bin/python .agents/skills/decision-focused-learning/scripts/verify_dfl_contract.py --self-test
-.venv/bin/python .agents/skills/data-leakage-audit/scripts/audit_leakage.py --manifest data/demo/lineage_manifest.json --scan-dir src
-.venv/bin/python .agents/skills/experiment-reproducibility/scripts/verify_reproducibility.py --manifest artifacts/demo/run_manifest.json
-.venv/bin/python .agents/skills/dashboard-qa/scripts/verify_dashboard_qa.py --bundle artifacts/demo/dashboard_qa_bundle.json
+pytest -q
+ruff check .
+python scripts/verify_release.py
+python scripts/browser_release_qa.py --slides
 ```
 
----
+Tests generate isolated integration fixtures rather than require existing ignored demo outputs. Independent release verification requires the three standard v2 pipelines to have completed. Browser QA requires the server on port 8511, the QA dependency group and an installed Chrome; it uses an isolated headless browser and blocks non-loopback HTTP requests. It does not close an existing user browser.
 
-## 4. Documentation & Artifacts Index
+The mathematical suite covers the mandatory two-store oracle, marginal-unit identity, CVaR ambiguity equivalence, hard versus soft service, and the dispatch/admission horizon oracle against independent exhaustive enumeration. Run the project skill self-tests and actual bundle/lineage audits as described in their SKILL.md files; their results complement the tests and independent checks.
 
-- [`docs/METHODOLOGY.md`](./docs/METHODOLOGY.md) — Complete mathematical formulation, marginal-unit cost derivation, PyEPO `SPOPlus` architecture, and $\mathcal{P}_\alpha \equiv \text{CVaR}_\alpha$ DRO duality.
-- [`docs/ASSUMPTIONS_AND_LIMITATIONS.md`](./docs/ASSUMPTIONS_AND_LIMITATIONS.md) — Explicit provenance disclosures (`observed sales != true demand`, synthetic `MU` economics, tail-risk dependence on scenario distributions).
-- [`docs/EXPERIMENT_PROTOCOL.md`](./docs/EXPERIMENT_PROTOCOL.md) — Chronological split rules, leakage prevention gates, and 7-policy evaluation protocol.
-- [`docs/PRESENTATION_GUIDE.md`](./docs/PRESENTATION_GUIDE.md) — 7-slide interview talk track (~8–10 min) and 60-second offline live-demo runbook for the MR. D.I.Y. interview.
-- [`docs/IMPLEMENTATION_STATUS.md`](./docs/IMPLEMENTATION_STATUS.md) — Current verified status across Phases 0–7.
-- [`reports/results_summary.md`](./reports/results_summary.md) — Computed 7-policy out-of-sample results table and scientific verdict.
+## Scientific interpretation
+
+Seven required policies are compared with two risk-neutral scenario ablations. Heuristic baselines are marked feasible, not cost-optimal. A more complex method need not win: choose from validation evidence and report held-out wins, losses and uncertainty honestly.
+
+The v2 reruns use previously inspected test periods and are retrospective. Short horizons, synthetic economics, sales censoring, selected cohorts, geometric tail/dependence assumptions and domain shift limit conclusions. Carryover uses explicitly renewed warehouse dispatch budgets and synthetic holding/terminal assumptions. Full methodology is in [docs/METHODOLOGY.md](docs/METHODOLOGY.md); limitations in [docs/ASSUMPTIONS_AND_LIMITATIONS.md](docs/ASSUMPTIONS_AND_LIMITATIONS.md).

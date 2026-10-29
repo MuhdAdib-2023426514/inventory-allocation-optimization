@@ -20,6 +20,8 @@ REQUIRED_POLICIES = [
 ]
 
 
+EVALUATED_POLICIES = REQUIRED_POLICIES + ["supervised_stochastic", "dfl_stochastic"]
+
 def block_bootstrap_origin_ci(
     origin_values: np.ndarray,
     block_size: int = 2,
@@ -83,7 +85,7 @@ def summarize_backtest_metrics(
     )
 
     rows: list[dict[str, Any]] = []
-    for policy in REQUIRED_POLICIES:
+    for policy in EVALUATED_POLICIES:
         sub = metrics_df[metrics_df["policy"] == policy].sort_values("origin")
         if sub.empty:
             continue
@@ -117,8 +119,13 @@ def summarize_backtest_metrics(
         diff_vs_sup = float(np.mean(costs - sup_costs))
         pct_vs_sup = float(100.0 * diff_vs_sup / max(1e-6, float(np.mean(sup_costs))))
 
+        prop = metrics_df[metrics_df.policy == "proportional_allocation"].set_index("origin").total_cost_mu
+        prop_costs = prop.loc[sub.origin].to_numpy()
+        d_low, d_high = block_bootstrap_origin_ci(costs-sup_costs, block_size, num_resamples, seed)
+        p_low, p_high = block_bootstrap_origin_ci(costs-prop_costs, block_size, num_resamples, seed)
         rows.append(
             {
+                "risk_alpha": alpha,
                 "policy": policy,
                 "num_origins": len(costs),
                 "mean_cost_mu": mean_cost,
@@ -141,6 +148,11 @@ def summarize_backtest_metrics(
                 "diff_vs_equal_mu": diff_vs_eq,
                 "pct_vs_equal": pct_vs_eq,
                 "diff_vs_supervised_pto_mu": diff_vs_sup,
+                "paired_diff_vs_supervised_ci95_low_mu": d_low,
+                "paired_diff_vs_supervised_ci95_high_mu": d_high,
+                "diff_vs_proportional_mu": float(np.mean(costs-prop_costs)),
+                "paired_diff_vs_proportional_ci95_low_mu": p_low,
+                "paired_diff_vs_proportional_ci95_high_mu": p_high,
                 "pct_vs_supervised_pto": pct_vs_sup,
                 "mean_runtime_seconds": float(np.mean(runtimes)),
                 "all_optimal": bool((sub["solver_status"] == "optimal").all()),

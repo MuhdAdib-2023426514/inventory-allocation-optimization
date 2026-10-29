@@ -1,0 +1,166 @@
+{
+  "status": "PASS",
+  "checks": [
+    {
+      "mode": "demo",
+      "action": "Page A \u2014 Problem & Data",
+      "errors": []
+    },
+    {
+      "mode": "demo",
+      "action": "Page B \u2014 Models & Diagnostics",
+      "errors": []
+    },
+    {
+      "mode": "demo",
+      "action": "Page C \u2014 Allocation Results",
+      "errors": []
+    },
+    {
+      "mode": "demo",
+      "action": "Page D \u2014 Risk & Robustness",
+      "errors": []
+    },
+    {
+      "mode": "demo",
+      "action": "Page E \u2014 Evidence & Business Impact",
+      "errors": []
+    },
+    {
+      "mode": "demo",
+      "action": "page_d_alpha=0.0",
+      "errors": []
+    },
+    {
+      "mode": "demo",
+      "action": "page_d_rw=0.0",
+      "errors": []
+    },
+    {
+      "mode": "demo",
+      "action": "page_d_supply=0.6",
+      "errors": []
+    },
+    {
+      "mode": "demo",
+      "action": "page_d_open_stock=5",
+      "errors": []
+    },
+    {
+      "mode": "demo",
+      "action": "page_d_promo_lift=50",
+      "errors": []
+    },
+    {
+      "mode": "demo",
+      "action": "page_d_shortage_mult=2.0",
+      "errors": []
+    },
+    {
+      "mode": "demo",
+      "action": "page_d_alpha=0.95",
+      "errors": []
+    },
+    {
+      "mode": "demo",
+      "action": "page_d_rw=1.0",
+      "errors": []
+    },
+    {
+      "mode": "demo",
+      "action": "page_d_supply=1.2",
+      "errors": []
+    },
+    {
+      "mode": "demo",
+      "action": "service=soft",
+      "errors": []
+    },
+    {
+      "mode": "demo",
+      "action": "service=hard",
+      "errors": []
+    },
+    {
+      "mode": "m5_intermittent",
+      "action": "Page A \u2014 Problem & Data",
+      "errors": []
+    },
+    {
+      "mode": "m5_intermittent",
+      "action": "Page B \u2014 Models & Diagnostics",
+      "errors": []
+    },
+    {
+      "mode": "m5_intermittent",
+      "action": "Page C \u2014 Allocation Results",
+      "errors": []
+    },
+    {
+      "mode": "m5_intermittent",
+      "action": "Page D \u2014 Risk & Robustness",
+      "errors": []
+    },
+    {
+      "mode": "m5_intermittent",
+      "action": "Page E \u2014 Evidence & Business Impact",
+      "errors": []
+    },
+    {
+      "mode": "m5_intermittent",
+      "action": "page_d_alpha=0.0",
+      "errors": []
+    },
+    {
+      "mode": "m5_intermittent",
+      "action": "page_d_rw=0.0",
+      "errors": []
+    },
+    {
+      "mode": "m5_intermittent",
+      "action": "page_d_supply=0.6",
+      "errors": []
+    },
+    {
+      "mode": "m5_intermittent",
+      "action": "page_d_open_stock=5",
+      "errors": []
+    },
+    {
+      "mode": "m5_intermittent",
+      "action": "page_d_promo_lift=50",
+      "errors": []
+    },
+    {
+      "mode": "m5_intermittent",
+      "action": "page_d_shortage_mult=2.0",
+      "errors": []
+    },
+    {
+      "mode": "m5_intermittent",
+      "action": "page_d_alpha=0.95",
+      "errors": []
+    },
+    {
+      "mode": "m5_intermittent",
+      "action": "page_d_rw=1.0",
+      "errors": []
+    },
+    {
+      "mode": "m5_intermittent",
+      "action": "page_d_supply=1.2",
+      "errors": []
+    },
+    {
+      "mode": "m5_intermittent",
+      "action": "service=soft",
+      "errors": []
+    },
+    {
+      "mode": "m5_intermittent",
+      "action": "service=hard",
+      "errors": []
+    }
+  ],
+  "count": 32
+}

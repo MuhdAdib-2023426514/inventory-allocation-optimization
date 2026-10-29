@@ -26,6 +26,7 @@ from inventory_di.optimization.core import (
     solve_service_level_constrained_milp,
 )
 from inventory_di.optimization.dro import solve_scenario_reweighting_dro_milp
+from inventory_di.provenance import validate_stage
 from inventory_di.visualization.plots import (
     plot_cost_risk_service_tradeoff,
     plot_forecast_quantiles,
@@ -45,8 +46,15 @@ REGISTERED_PAGES = [
 ]
 
 
+def load_cached_bundle(config_path: str):
+    cfg = load_config(config_path)
+    paths = [Path(config_path)] + list(Path(cfg.data.processed_dir).glob("*")) + list(Path(cfg.data.artifacts_dir).glob("*"))
+    signature = tuple((str(p), p.stat().st_mtime_ns, p.stat().st_size) for p in sorted(paths) if p.is_file())
+    return _load_cached_bundle(config_path, signature)
+
+
 @st.cache_data(show_spinner=False)
-def load_cached_bundle(config_path: str) -> dict[str, Any]:
+def _load_cached_bundle(config_path: str, signature: tuple) -> dict[str, Any]:
     """Load cached Parquet and JSON artifacts offline without retraining."""
     cfg: ExperimentConfig = load_config(config_path)
     proc_dir = Path(cfg.data.processed_dir)
@@ -68,6 +76,10 @@ def load_cached_bundle(config_path: str) -> dict[str, Any]:
     if missing:
         return {"status": "MISSING", "missing_files": missing, "cfg": cfg}
 
+    try:
+        validate_stage(cfg, "backtest", check_source=False)
+    except (ValueError, KeyError) as exc:
+        return {"status": "INVALID", "missing_files": [str(exc)], "cfg": cfg}
     return {
         "status": "OK",
         "cfg": cfg,
@@ -146,10 +158,10 @@ def render_page_a(bundle: dict[str, Any]) -> None:
 
     skus = sorted(weekly_df["sku_id"].unique())
     selected_sku = st.selectbox("Select SKU for Historical Demand & Split Inspection", skus, key="page_a_sku")
-    st.plotly_chart(plot_historical_demand_by_split(weekly_df, selected_sku), use_container_width=True)
+    st.plotly_chart(plot_historical_demand_by_split(weekly_df, selected_sku), width="stretch")
 
     st.subheader("Synthetic Inventory & Operating Economics Contract (`inventory_config.parquet`)")
-    st.dataframe(inv_df, use_container_width=True)
+    st.dataframe(inv_df, width="stretch")
 
     with st.expander("Data Quality, Temporal Split & Leakage-Audit Manifest"):
         st.json(lineage)
@@ -163,13 +175,19 @@ def render_page_b(bundle: dict[str, Any]) -> None:
     st.markdown(
         """
         ### Supervised PTO vs. Decision-Focused Learning (DFL via PyEPO `SPOPlus`)
-        * **Chronological Whole-Origin Split:** `train` $\\rightarrow$ `val` (temperature calibration & early stopping) $\\rightarrow$ `test` (out-of-sample evaluation).
+        * **Chronological Whole-Origin Split:** `train` $\\rightarrow$ `val` (temperature calibration, checkpoint/lambda selection) $\\rightarrow$ `test` (out-of-sample evaluation).
         * **Discrete PMF with Overflow Tail:** Both models share the exact same neural architecture predicting $p(d \\mid \\text{features})$ over $d \\in \\{0, \\dots, H\\}$ plus an explicit `overflow > H` bin.
         * **Survival-to-Marginal-Cost Mapping:** Survival probabilities $q[s,k] = P(D_s \\ge I_s + k \\mid \\text{features})$ map differentiably to marginal unit costs $\\hat{c}[s,k] = t_s + h_s - (b_s + h_s)q[s,k]$.
-        * **Genuine DFL Objective:** Trains end-to-end with $\\mathcal{L} = \\text{NLL} + \\lambda_{\\text{DFL}} \\cdot \\mathcal{L}_{\\text{SPO}+}(\\hat{c}, c_{\\text{true}}, y^*, z^*)$ on the per-SKU fixed-feasible marginal-unit optimization model.
+        * **Genuine DFL Objective:** Trains end-to-end with $\\mathcal{L} = \\text{NLL} + \\lambda_{\\text{DFL}} \\cdot \\mathcal{L}_{\\text{SPO}+}(\\hat{c}, c_{\\text{true}}, y^*, z^*)$ over the joint multi-SKU fixed-feasible marginal-unit model. The SPO+ term is normalized by the number of marginal-unit coefficients.
         """
     )
 
+    weekly = bundle["weekly_demand"]
+    for column, split in zip(st.columns(3), ["train", "val", "test"]):
+        block = weekly[weekly.split == split]
+        column.metric(f"{split.capitalize()} origins", block.forecast_origin.nunique())
+        column.caption(f"{block.target_start.min()} to {block.target_end.max()}")
+    st.caption("Chronological flow: training → validation selection/calibration → retrospective test evaluation. All stores/SKUs at an origin share its split.")
     skus = sorted(diag["dfl"].keys())
     col_s, col_o = st.columns(2)
     selected_sku = col_s.selectbox("Select SKU", skus, key="page_b_sku")
@@ -183,17 +201,20 @@ def render_page_b(bundle: dict[str, Any]) -> None:
     # Calibration warning gate (AGENTS.md §10 Page B)
     sup_cov = float(sup_cal.get("coverage_p10_p90", 0.80))
     dfl_cov = float(dfl_cal.get("coverage_p10_p90", 0.80))
-    if sup_cov < 0.60 or dfl_cov < 0.60 or float(dfl_cal.get("nll", 0.0)) > 3.2:
+    uniform_nll = float(np.log(diag["support_h"] + 2))
+    poor_nll = any(float(cal["nll"]) > uniform_nll for cal in [sup_cal, dfl_cal])
+    poor_tail = any(abs(float(cal["realized_overflow_rate"]) - float(cal["predicted_overflow_prob"])) > .15 for cal in [sup_cal, dfl_cal])
+    if sup_cov < 0.60 or dfl_cov < 0.60 or poor_nll or poor_tail:
         st.warning(
-            "**Calibration Warning:** Validation P10–P90 interval coverage or NLL indicates elevated "
-            "distributional uncertainty. Inspect scenario stress bounds on Page D before committing stock."
+            "**Diagnostic warning:** Coverage is below 60%, NLL is worse than a uniform-bin reference, or overflow probability differs from validation frequency by over 15 percentage points. Interpret forecasts and allocations cautiously."
         )
     else:
         st.success(
-            f"**Calibration Diagnostics Check:** Validation temperature scaling applied (`split='val'`). "
+            f"**Validation Diagnostics:** Temperature scaling applied (`split='val'`). "
             f"P10–P90 coverage: Supervised = `{100.0 * sup_cov:.1f}%`, DFL = `{100.0 * dfl_cov:.1f}%`."
         )
 
+    st.caption("These descriptive validation checks do not guarantee calibration on future demand.")
     diag_table = pd.DataFrame(
         [
             {
@@ -220,21 +241,21 @@ def render_page_b(bundle: dict[str, Any]) -> None:
             },
         ]
     )
-    st.dataframe(diag_table, use_container_width=True)
+    st.dataframe(diag_table, width="stretch")
 
     c1, c2 = st.columns(2)
     with c1:
         st.plotly_chart(
             plot_training_curves(diag["dfl"][selected_sku]["history"], selected_sku, "DFL (NLL + SPO+)"),
-            use_container_width=True,
+            width="stretch",
         )
     with c2:
         q_df = pd.DataFrame(origins_bundle[selected_origin]["forecast_quantiles"])
-        st.plotly_chart(plot_forecast_quantiles(q_df, selected_sku), use_container_width=True)
+        st.plotly_chart(plot_forecast_quantiles(q_df, selected_sku), width="stretch")
 
     if diag.get("lambda_dfl_ablation"):
         st.subheader("Validation Ablation Across `lambda_DFL`")
-        st.dataframe(pd.DataFrame(diag["lambda_dfl_ablation"]), use_container_width=True)
+        st.dataframe(pd.DataFrame(diag["lambda_dfl_ablation"]), width="stretch")
 
 
 def render_page_c(bundle: dict[str, Any]) -> None:
@@ -252,16 +273,16 @@ def render_page_c(bundle: dict[str, Any]) -> None:
     sub_metrics = metrics_df[metrics_df["origin"] == sel_origin].copy()
 
     all_feasible = bool(sub_alloc["is_feasible"].all())
-    all_optimal = bool((sub_alloc["solver_status"] == "optimal").all())
+    all_optimal = bool(sub_alloc["solver_status"].isin(["optimal", "heuristic_feasible"]).all())
     if all_feasible and all_optimal:
         st.success(
-            f"**Solver & Feasibility Status (`{sel_origin}`):** `optimal` | All warehouse supply ($W_p$), "
+            f"**Allocation acceptance (`{sel_origin}`):** MILPs optimal; heuristic baselines feasible. Warehouse supply ($W_p$), "
             "per-store-SKU caps ($K_{sp}$), and total store capacities ($C_s$) verified."
         )
     else:
         st.error(f"**Solver Warning (`{sel_origin}`):** Non-optimal or infeasible allocation detected!")
 
-    st.plotly_chart(plot_store_allocations_comparison(sub_alloc, sel_sku), use_container_width=True)
+    st.plotly_chart(plot_store_allocations_comparison(sub_alloc, sel_sku), width="stretch")
 
     st.subheader(f"Origin `{sel_origin}` Policy Cost & Fulfillment Summary (MU & Units)")
     st.dataframe(
@@ -279,10 +300,21 @@ def render_page_c(bundle: dict[str, Any]) -> None:
                 "solver_status",
             ]
         ],
-        use_container_width=True,
+        width="stretch",
     )
 
     st.subheader(f"Store-Level Shipment Table (`{sel_origin}`, `{sel_sku}`)")
+    ob = bundle["cached_origin_bundles"][sel_origin]
+    for family in sub_alloc.policy.unique():
+        scenarios = np.asarray(ob["dfl_scenarios"] if family.startswith("dfl") else ob["sup_scenarios"])
+        for si, store in enumerate(sorted(bundle["inventory_config"].store_id.unique())):
+            for pi, sku in enumerate(sorted(bundle["inventory_config"].sku_id.unique())):
+                mask = (sub_alloc.policy == family) & (sub_alloc.store_id == store) & (sub_alloc.sku_id == sku)
+                row = sub_alloc.loc[mask].iloc[0]
+                available = row.opening_stock_units + row.allocated_units
+                sub_alloc.loc[mask, "model_expected_shortage_units"] = np.maximum(scenarios[:,si,pi]-available, 0).mean()
+                sub_alloc.loc[mask, "model_expected_excess_units"] = np.maximum(available-scenarios[:,si,pi], 0).mean()
+    st.caption("Expected excess/shortage use each family's cached scenarios; they differ from realized demand.")
     sku_table = sub_alloc[sub_alloc["sku_id"] == sel_sku][
         [
             "policy",
@@ -291,13 +323,16 @@ def render_page_c(bundle: dict[str, Any]) -> None:
             "opening_stock_units",
             "warehouse_supply_units",
             "store_sku_unit_cap",
+            "store_total_capacity_units",
+            "model_expected_shortage_units",
+            "model_expected_excess_units",
             "allocated_units",
             "realized_demand_units",
             "is_feasible",
             "solver_status",
         ]
     ]
-    st.dataframe(sku_table, use_container_width=True)
+    st.dataframe(sku_table, width="stretch")
 
     csv_bytes = sub_alloc.to_csv(index=False).encode("utf-8")
     st.download_button(
@@ -338,16 +373,21 @@ def render_page_d(bundle: dict[str, Any]) -> None:
         index=0,
         key="page_d_family",
     )
+    selected = bundle["run_manifest"]["validation_dro_tuning"][sel_family + "_selected"]
+    defaults_for = (bundle["cfg"].run_id, sel_family)
+    if st.session_state.get("risk_defaults_for") != defaults_for:
+        st.session_state["page_d_alpha"] = selected["alpha"]
+        st.session_state["page_d_rw"] = selected["risk_weight"]
+        st.session_state["risk_defaults_for"] = defaults_for
+    st.caption("Defaults were selected on validation. Any control changes are exploratory counterfactuals, not new test evidence.")
     sel_alpha = c3.select_slider(
         "Tail Ambiguity Parameter (alpha)",
         options=[0.0, 0.50, 0.75, 0.90, 0.95],
-        value=0.90,
         key="page_d_alpha",
     )
     sel_rw = c4.select_slider(
         "Tail Risk Weight (risk_weight)",
         options=[0.0, 0.25, 0.50, 0.75, 1.0],
-        value=0.50,
         key="page_d_rw",
     )
 
@@ -378,7 +418,7 @@ def render_page_d(bundle: dict[str, Any]) -> None:
         key="page_d_shortage_mult",
     )
 
-    # Re-solve locally using cached scenarios (fast <50ms MILP solve; zero model retraining)
+    # Re-solve locally using cached scenarios without model retraining.
     ob = origins_bundle[sel_origin]
     demand_scale = 1.0 + (float(sel_promo_lift) / 100.0)
     scen_base = np.array(
@@ -414,9 +454,10 @@ def render_page_d(bundle: dict[str, Any]) -> None:
         help="Worst-case expected cost over the probability-reweighting ambiguity set P_alpha.",
     )
     m3.metric(
-        "3. Realized Historical Test Cost (MU)",
+        ("3. Simulated Uplift Test Cost (MU)" if sel_promo_lift != 0
+         else "3. Realized Historical Test Cost (MU)"),
         f"{real_live.total_cost_mu:.2f} MU",
-        help="Actual out-of-sample cost evaluated on the held-out demand proxy D_realized.",
+        help="Cost on the held-out sales proxy; with demand uplift, the target is a synthetic intervention.",
     )
     m4.metric(
         "Solver & Constraint Status",
@@ -441,7 +482,7 @@ def render_page_d(bundle: dict[str, Any]) -> None:
                     }
                 )
         sim_df = pd.DataFrame(sim_rows)
-        st.dataframe(sim_df, use_container_width=True)
+        st.dataframe(sim_df, width="stretch")
         st.download_button(
             label="Download What-If Simulated Shipment Plan (Excel-Compatible CSV)",
             data=sim_df.to_csv(index=False).encode("utf-8"),
@@ -453,8 +494,10 @@ def render_page_d(bundle: dict[str, Any]) -> None:
     st.markdown(
         "Evaluate required inventory allocations and physical stock sufficiency under hard service-level requirements. "
         "MR.DIY category managers can prescribe a target fill rate $\\beta^*$, and the MILP determines the cost-minimal "
-        "feasible store allocation or proves exact physical warehouse supply shortfall with slack relaxation."
+        "allocation under sampled demand scenarios. Hard mode enforces the target when feasible and "
+        "otherwise establishes maximum achievable service; soft mode permits an economic trade-off."
     )
+    service_mode = st.selectbox("Service Target Mode", ["hard", "soft"], key="service_mode")
     c_sl1, c_sl2 = st.columns([2, 2])
     with c_sl1:
         sel_target_sl = st.slider(
@@ -463,8 +506,8 @@ def render_page_d(bundle: dict[str, Any]) -> None:
             max_value=0.99,
             value=0.85,
             step=0.01,
-            format="%.0f%%",
-            help="Minimum portfolio fill rate required across all stores and SKUs over the demand distribution.",
+            format="%.2f",
+            help="Fraction of expected demand fulfilled: 0.85 means 85%. Hard mode enforces a feasible target; soft mode uses penalized slack.",
         )
     with c_sl2:
         shortfall_pen = st.number_input(
@@ -473,7 +516,8 @@ def render_page_d(bundle: dict[str, Any]) -> None:
             max_value=2000.0,
             value=500.0,
             step=50.0,
-            help="High penalty driving slack to zero if physical warehouse stock allows achieving the target.",
+            help="Applies only in soft mode. A larger penalty favors service; it does not prove physical infeasibility.",
+            disabled=service_mode == "hard",
         )
 
     sl_res = solve_service_level_constrained_milp(
@@ -481,19 +525,26 @@ def render_page_d(bundle: dict[str, Any]) -> None:
         inst=inst_mod,
         target_fill_rate=float(sel_target_sl),
         shortfall_penalty_mu=float(shortfall_pen),
+        mode=service_mode,
     )
 
     sl1, sl2, sl3, sl4 = st.columns(4)
     sl1.metric("Target Fill Rate", f"{sl_res.target_fill_rate * 100:.1f}%")
     sl2.metric("Achieved Fill Rate", f"{sl_res.achieved_fill_rate * 100:.1f}%")
-    sl3.metric("Physical Shortfall Units", f"{sl_res.shortfall_units:.1f} units")
+    sl3.metric("Expected Service Shortfall", f"{sl_res.shortfall_units:.1f} units")
     sl4.metric("Expected Total Cost (MU)", f"{sl_res.expected_cost_mu:.2f} MU")
 
-    if sl_res.shortfall_units > 1e-4:
+    if not sl_res.is_feasible:
+        st.error(f"Service-level solve failed: {sl_res.solver_status}")
+    elif sl_res.shortfall_units > 1e-4:
         st.warning(
-            f"⚠️ **Physical Supply Deficit:** Target fill rate of {sl_res.target_fill_rate * 100:.1f}% cannot be met with "
-            f"current warehouse supply constraints ($W_p$). Warehouse inventory shortfall is {sl_res.shortfall_units:.1f} units. "
-            f"Maximum achievable service level with existing stock is {sl_res.achieved_fill_rate * 100:.1f}%."
+            f"**Service target missed:** This solution achieves {sl_res.achieved_fill_rate * 100:.1f}% "
+            f"against a {sl_res.target_fill_rate * 100:.1f}% target, with "
+            f"{sl_res.shortfall_units:.1f} expected unfilled units below target. "
+            + ("This reflects supply, store capacity or allocation caps. " if service_mode == "hard"
+             else "This may reflect physical constraints or the selected economic penalty. ")
+            + (f"A separate solve establishes maximum achievable fill of {100*sl_res.maximum_achievable_fill_rate:.1f}%."
+               if sl_res.maximum_achievable_fill_rate is not None else "Soft shortfall alone does not establish physical infeasibility.")
         )
     else:
         st.success(
@@ -515,7 +566,7 @@ def render_page_d(bundle: dict[str, Any]) -> None:
                     }
                 )
         sl_plan_df = pd.DataFrame(sl_rows)
-        st.dataframe(sl_plan_df, use_container_width=True)
+        st.dataframe(sl_plan_df, width="stretch")
         st.download_button(
             label="Download Service-Level Allocation Plan (CSV)",
             data=sl_plan_df.to_csv(index=False).encode("utf-8"),
@@ -536,12 +587,13 @@ def render_page_d(bundle: dict[str, Any]) -> None:
     if bundle.get("cost_risk_service_frontier") is not None:
         st.subheader("Full-Horizon Cost–Risk–Service-Level Trade-Off Frontier Across Held-Out Test Origins")
         fr_df: pd.DataFrame = bundle["cost_risk_service_frontier"]
-        st.plotly_chart(plot_cost_risk_service_tradeoff(fr_df), use_container_width=True)
-        st.dataframe(fr_df, use_container_width=True)
+        st.plotly_chart(plot_cost_risk_service_tradeoff(fr_df), width="stretch")
+        st.dataframe(fr_df, width="stretch")
 
+    st.caption("The following precomputed sensitivity is for the first test origin and original stock, demand and costs; only its supply filter tracks the supply control. The full-horizon frontier above is descriptive and is not a hyperparameter selection set.")
     st.plotly_chart(
         plot_risk_cost_pareto(sens_df, supply_multiplier=float(sel_supply_mult)),
-        use_container_width=True,
+        width="stretch",
     )
 
     st.subheader("Precomputed Risk & Supply Sensitivity Sweep Table")
@@ -549,7 +601,7 @@ def render_page_d(bundle: dict[str, Any]) -> None:
         sens_df[
             (sens_df["supply_multiplier"] - float(sel_supply_mult)).abs() < 1e-6
         ].sort_values(["policy_family", "alpha", "risk_weight"]),
-        use_container_width=True,
+        width="stretch",
     )
 
 
@@ -559,9 +611,9 @@ def render_page_e(bundle: dict[str, Any]) -> None:
     metrics_df: pd.DataFrame = bundle["backtest_metrics"]
     manifest: dict[str, Any] = bundle["run_manifest"]
 
-    st.plotly_chart(plot_policy_cost_comparison(summary_df), use_container_width=True)
+    st.plotly_chart(plot_policy_cost_comparison(summary_df), width="stretch")
 
-    st.subheader("Apples-to-Apples 7-Policy Out-of-Sample Evaluation Table (MU)")
+    st.subheader("Seven Required Policies + Two Risk-Neutral Scenario Ablations (MU)")
     st.caption(manifest.get("small_sample_caveat", ""))
     st.dataframe(
         summary_df[
@@ -583,33 +635,35 @@ def render_page_e(bundle: dict[str, Any]) -> None:
                 "data_mode",
             ]
         ],
-        use_container_width=True,
+        width="stretch",
     )
 
     st.subheader("Per-Origin Paired Realized Total Cost (MU)")
     piv = metrics_df.pivot(index="origin", columns="policy", values="total_cost_mu")[
         summary_df["policy"].tolist()
     ]
-    st.dataframe(piv, use_container_width=True)
+    st.dataframe(piv, width="stretch")
 
     if bundle.get("multi_seed_summary") is not None:
-        st.subheader("Independent Training-Seed & Scenario-Seed Reliability (`[42, 101, 202]`)")
+        st.subheader("Three Matched Training Seeds (`[42, 101, 202]`; Descriptive Evidence)")
+        st.caption("Each independent seed uses the same training budget, matched baseline/DFL updates and its own validation calibration and DRO selection.")
         ms_df: pd.DataFrame = bundle["multi_seed_summary"]
-        st.dataframe(ms_df, use_container_width=True)
+        st.dataframe(ms_df, width="stretch")
 
     if bundle.get("carryover_leadtime") is not None:
         st.subheader("Rolling Inventory Carryover & Lead-Time (`L=0` vs `L=1` Week) Evaluation")
+        st.caption("Corrected carryover experiment: explicit admissions, deferred inventory and independently replayed hindsight oracle. Lead-time feature projection remains approximate; these are retrospective simulations with synthetic economics.")
         co_df: pd.DataFrame = bundle["carryover_leadtime"]
-        st.dataframe(co_df, use_container_width=True)
+        st.dataframe(co_df, width="stretch")
 
-    reg_p = Path("artifacts/m5/summary_metrics.parquet")
-    int_p = Path("artifacts/m5_intermittent/summary_metrics.parquet")
+    reg_p = Path("artifacts/m5_v2/summary_metrics.parquet")
+    int_p = Path("artifacts/m5_intermittent_v2/summary_metrics.parquet")
     if reg_p.exists() and int_p.exists():
         st.subheader("Demand Regime Generalization: Regular vs. Intermittent M5 SKUs")
         reg_s = pd.read_parquet(reg_p)[["policy", "mean_cost_mu", "realized_cvar90_cost_mu", "mean_fill_rate"]]
         int_s = pd.read_parquet(int_p)[["policy", "mean_cost_mu", "realized_cvar90_cost_mu", "mean_fill_rate"]]
         merged_regime = reg_s.merge(int_s, on="policy", suffixes=("_regular", "_intermittent"))
-        st.dataframe(merged_regime, use_container_width=True)
+        st.dataframe(merged_regime, width="stretch")
 
     with st.expander("Run Reproducibility Manifest, Validation DRO Tuning & Checksums"):
         st.json(manifest)
@@ -623,6 +677,7 @@ def main() -> None:
     )
 
     st.sidebar.title("Inventory Decision Intelligence")
+    default_mode_idx = 1 if Path("artifacts/m5_v2/run_manifest.json").exists() else 0
     mode_label = st.sidebar.radio(
         "Dataset / Experiment Mode",
         options=[
@@ -630,7 +685,7 @@ def main() -> None:
             "M5 Mode (M5 Sales Proxy)",
             "M5 Intermittent Mode (Lumpy/Intermittent SKUs)",
         ],
-        index=0,
+        index=default_mode_idx,
     )
     if "Demo" in mode_label:
         config_path = "configs/demo.yaml"
@@ -646,7 +701,7 @@ def main() -> None:
 
     if bundle["status"] != "OK":
         st.error(
-            "### Cached Experiment Artifacts Not Found\n"
+            "### Cached Experiment Artifacts Missing or Inconsistent\n"
             "The dashboard runs strictly offline from verified precomputed artifacts. "
             "Missing files:\n"
             + "\n".join(f"- `{m}`" for m in bundle["missing_files"])
@@ -661,16 +716,11 @@ def main() -> None:
         )
         return
 
-    if page == "Page A — Problem & Data":
-        render_page_a(bundle)
-    elif page == "Page B — Models & Diagnostics":
-        render_page_b(bundle)
-    elif page == "Page C — Allocation Results":
-        render_page_c(bundle)
-    elif page == "Page D — Risk & Robustness":
-        render_page_d(bundle)
-    elif page == "Page E — Evidence & Business Impact":
-        render_page_e(bundle)
+    renderers = dict(zip(REGISTERED_PAGES, [render_page_a, render_page_b, render_page_c, render_page_d, render_page_e]))
+    try:
+        renderers[page](bundle)
+    except (ValueError, RuntimeError) as exc:
+        st.error(f"This experiment could not be evaluated: {exc}. Check the controls or regenerate the indicated artifacts.")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,65 @@
+HighsMipSolverData::transformNewIntegerFeasibleSolution tmpSolver.run();
+HighsMipSolverData::transformNewIntegerFeasibleSolution tmpSolver.run();
+HighsMipSolverData::transformNewIntegerFeasibleSolution tmpSolver.run();
+{
+  "command": "backtest",
+  "mode": "m5",
+  "data_mode": "m5_sales_proxy",
+  "num_test_origins": 12,
+  "policies": [
+    {
+      "policy": "equal_allocation",
+      "mean_cost_mu": 1432.3458333333335,
+      "mean_regret_mu": 412.19583333333327,
+      "mean_fill_rate": 0.7116078810500489
+    },
+    {
+      "policy": "proportional_allocation",
+      "mean_cost_mu": 1298.9125000000001,
+      "mean_regret_mu": 278.76249999999993,
+      "mean_fill_rate": 0.7391300136171469
+    },
+    {
+      "policy": "supervised_pto",
+      "mean_cost_mu": 1311.5416666666667,
+      "mean_regret_mu": 291.3916666666666,
+      "mean_fill_rate": 0.7367799621744767
+    },
+    {
+      "policy": "supervised_dro",
+      "mean_cost_mu": 1320.1833333333334,
+      "mean_regret_mu": 300.03333333333336,
+      "mean_fill_rate": 0.7350577349304802
+    },
+    {
+      "policy": "dfl_pto",
+      "mean_cost_mu": 1305.7166666666667,
+      "mean_regret_mu": 285.56666666666666,
+      "mean_fill_rate": 0.7378504682752437
+    },
+    {
+      "policy": "dfl_dro",
+      "mean_cost_mu": 1311.7458333333334,
+      "mean_regret_mu": 291.59583333333325,
+      "mean_fill_rate": 0.7365744278601206
+    },
+    {
+      "policy": "clairvoyant_oracle",
+      "mean_cost_mu": 1020.1500000000001,
+      "mean_regret_mu": 0.0,
+      "mean_fill_rate": 0.7919549680886742
+    },
+    {
+      "policy": "supervised_stochastic",
+      "mean_cost_mu": 1318.5333333333333,
+      "mean_regret_mu": 298.38333333333327,
+      "mean_fill_rate": 0.7353649458534917
+    },
+    {
+      "policy": "dfl_stochastic",
+      "mean_cost_mu": 1313.6958333333332,
+      "mean_regret_mu": 293.5458333333332,
+      "mean_fill_rate": 0.7362543870837251
+    }
+  ]
+}

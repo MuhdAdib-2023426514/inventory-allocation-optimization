@@ -31,51 +31,21 @@ def plot_historical_demand_by_split(weekly_df: pd.DataFrame, sku_id: str) -> go.
 
 
 def plot_training_curves(history: list[dict[str, float]], sku_id: str, model_label: str) -> go.Figure:
-    """Plot training NLL, SPO+ surrogate loss, and validation decision regret across epochs (Page B)."""
+    """Separate diagnostic scales rather than label likelihood as monetary regret."""
+    from plotly.subplots import make_subplots
     df = pd.DataFrame(history)
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=df["epoch"],
-            y=df["train_nll"],
-            mode="lines+markers",
-            name="Train NLL",
-        )
-    )
-    if "train_spoplus" in df.columns and (df["train_spoplus"] > 0).any():
-        fig.add_trace(
-            go.Scatter(
-                x=df["epoch"],
-                y=df["train_spoplus"],
-                mode="lines+markers",
-                name="Train Scaled SPO+ Surrogate",
-            )
-        )
-    fig.add_trace(
-        go.Scatter(
-            x=df["epoch"],
-            y=df["val_nll"],
-            mode="lines+markers",
-            name="Validation NLL",
-        )
-    )
-    if "val_decision_regret_mu" in df.columns:
-        fig.add_trace(
-            go.Scatter(
-                x=df["epoch"],
-                y=df["val_decision_regret_mu"],
-                mode="lines+markers",
-                name="Validation Decision Regret (MU)",
-            )
-        )
-    fig.update_layout(
-        title=f"{model_label} Training & Validation Curve ({sku_id})",
-        xaxis_title="Epoch",
-        yaxis_title="Loss / Regret (MU)",
-        template="plotly_white",
-        height=360,
-        margin=dict(l=20, r=20, t=50, b=20),
-    )
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=.12)
+    for key, label in [("train_nll", "Train NLL"), ("val_nll", "Validation NLL")]:
+        fig.add_trace(go.Scatter(x=df.epoch, y=df[key], name=label), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.epoch, y=df.train_spoplus, name="Normalized SPO+"), row=2, col=1)
+    if "val_decision_regret_mu" in df:
+        fig.add_trace(go.Scatter(x=df.epoch, y=df.val_decision_regret_mu, name="Validation regret"), row=3, col=1)
+    fig.update_yaxes(title_text="NLL", row=1, col=1)
+    fig.update_yaxes(title_text="SPO+ MU/unit", row=2, col=1)
+    fig.update_yaxes(title_text="Regret MU/SKU", row=3, col=1)
+    fig.update_xaxes(title_text="Epoch", row=3, col=1)
+    fig.update_layout(title=f"{model_label} Diagnostics ({sku_id})", template="plotly_white", height=580,
+                      margin=dict(l=45,r=15,t=55,b=35), legend=dict(orientation="h",y=-.12))
     return fig
 
 
@@ -94,33 +64,36 @@ def plot_forecast_quantiles(quantiles_df: pd.DataFrame, sku_id: str) -> go.Figur
     fig.add_trace(
         go.Scatter(
             x=sub["store_id"],
-            y=sub["sup_expected"],
+            y=sub["sup_p50"],
             error_y=dict(
                 type="data",
                 symmetric=False,
-                array=(sub["sup_p90"] - sub["sup_expected"]).tolist(),
-                arrayminus=(sub["sup_expected"] - sub["sup_p10"]).tolist(),
+                array=(sub["sup_p90"] - sub["sup_p50"]).tolist(),
+                arrayminus=(sub["sup_p50"] - sub["sup_p10"]).tolist(),
             ),
             mode="markers",
             marker=dict(size=11, color="#2563eb"),
-            name="Supervised Expected [P10, P90]",
+            name="Supervised Median [P10, P90]",
         )
     )
     fig.add_trace(
         go.Scatter(
             x=sub["store_id"],
-            y=sub["dfl_expected"],
+            y=sub["dfl_p50"],
             error_y=dict(
                 type="data",
                 symmetric=False,
-                array=(sub["dfl_p90"] - sub["dfl_expected"]).tolist(),
-                arrayminus=(sub["dfl_expected"] - sub["dfl_p10"]).tolist(),
+                array=(sub["dfl_p90"] - sub["dfl_p50"]).tolist(),
+                arrayminus=(sub["dfl_p50"] - sub["dfl_p10"]).tolist(),
             ),
             mode="markers",
             marker=dict(size=11, color="#dc2626", symbol="diamond"),
-            name="DFL (NLL+SPO+) Expected [P10, P90]",
+            name="DFL Median [P10, P90]",
         )
     )
+    for prefix, color in [("sup", "#2563eb"), ("dfl", "#dc2626")]:
+        fig.add_trace(go.Scatter(x=sub.store_id, y=sub[prefix+"_expected"], mode="markers",
+                      marker=dict(color=color, symbol="x", size=10), name=prefix+" expected demand"))
     fig.update_layout(
         title=f"Forecast Distribution Quantiles vs. Realized Demand ({sku_id})",
         xaxis_title="Store",

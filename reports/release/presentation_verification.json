@@ -1,0 +1,50 @@
+{
+  "status": "PASS",
+  "renderer": "Local Microsoft PowerPoint PDF export",
+  "slides": [
+    {
+      "slide": 1,
+      "text_complete": true,
+      "shapes_within_canvas": true,
+      "footer_clear": true
+    },
+    {
+      "slide": 2,
+      "text_complete": true,
+      "shapes_within_canvas": true,
+      "footer_clear": true
+    },
+    {
+      "slide": 3,
+      "text_complete": true,
+      "shapes_within_canvas": true,
+      "footer_clear": true
+    },
+    {
+      "slide": 4,
+      "text_complete": true,
+      "shapes_within_canvas": true,
+      "footer_clear": true
+    },
+    {
+      "slide": 5,
+      "text_complete": true,
+      "shapes_within_canvas": true,
+      "footer_clear": true
+    },
+    {
+      "slide": 6,
+      "text_complete": true,
+      "shapes_within_canvas": true,
+      "footer_clear": true
+    },
+    {
+      "slide": 7,
+      "text_complete": true,
+      "shapes_within_canvas": true,
+      "footer_clear": true
+    }
+  ],
+  "talk_track_seconds": 540,
+  "candidate_rehearsal": "Prepared; not claimed performed"
+}

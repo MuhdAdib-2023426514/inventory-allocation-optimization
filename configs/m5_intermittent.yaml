@@ -1,8 +1,7 @@
-mode: "m5"
-data_mode: "m5_sales_proxy"
+mode: m5
+data_mode: m5_sales_proxy
 global_seed: 42
-run_id: "m5_intermittent_v1"
-
+run_id: m5_intermittent_v2
 data:
   num_stores: 5
   num_skus: 10
@@ -10,14 +9,13 @@ data:
   train_weeks: 100
   val_weeks: 8
   test_weeks: 12
-  demand_regime: "intermittent"
-  raw_m5_dir: "data/raw/m5"
-  processed_dir: "data/processed/m5_intermittent"
-  artifacts_dir: "artifacts/m5_intermittent"
-  reports_dir: "reports/m5_intermittent"
-
+  demand_regime: intermittent
+  raw_m5_dir: data/raw/m5
+  processed_dir: data/processed/m5_intermittent_v2
+  artifacts_dir: artifacts/m5_intermittent_v2
+  reports_dir: reports/m5_intermittent_v2
 economics:
-  currency: "MU"
+  currency: MU
   opening_stock_units: 0
   store_sku_unit_cap: 12
   warehouse_supply_ratio: 0.78
@@ -25,7 +23,6 @@ economics:
   unit_shortage_penalty_mu: 6.0
   unit_holding_cost_mu: 1.0
   unit_ship_cost_mu: 0.25
-
 model:
   max_demand_support_h: 16
   hidden_dim: 48
@@ -33,20 +30,39 @@ model:
   epochs: 25
   batch_size: 16
   lambda_dfl: 1.0
-  lambda_dfl_grid: [0.0, 0.5, 1.0, 2.0]
+  lambda_dfl_grid:
+  - 0.0
+  - 0.5
+  - 1.0
+  - 2.0
   spoplus_processes: 1
-
 dro:
   num_scenarios: 40
-  alpha: 0.90
+  alpha: 0.9
   risk_weight: 0.25
-  alpha_grid: [0.0, 0.50, 0.75, 0.90, 0.95]
-  risk_weight_grid: [0.0, 0.25, 0.50, 0.75, 1.0]
-  supply_stress_multipliers: [0.6, 0.8, 1.0, 1.2]
-
+  alpha_grid:
+  - 0.0
+  - 0.5
+  - 0.75
+  - 0.9
+  - 0.95
+  risk_weight_grid:
+  - 0.0
+  - 0.25
+  - 0.5
+  - 0.75
+  - 1.0
+  supply_stress_multipliers:
+  - 0.6
+  - 0.8
+  - 1.0
+  - 1.2
 evaluation:
   trailing_weeks_proportional: 8
-  bootstrap_resamples: 200
+  bootstrap_resamples: 2000
   bootstrap_block_size: 2
-  seeds: [42, 101, 202]
+  seeds:
+  - 42
+  - 101
+  - 202
   independent_training_seeds: true
