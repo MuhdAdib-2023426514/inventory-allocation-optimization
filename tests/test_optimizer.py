@@ -18,6 +18,7 @@ from inventory_di.optimization.core import (
     solve_multiperiod_carryover_oracle,
     solve_nominal_marginal_cost_milp,
 )
+from inventory_di.simulation.simulator import InventoryStateTransitionSystem
 
 
 def test_mandatory_toy_mathematical_oracle() -> None:
@@ -146,45 +147,41 @@ def test_multiperiod_carryover_oracle_nonnegative_regret() -> None:
         )
         assert oracle_mp["solver_status"] == "optimal"
 
-        # Simulate equal_allocation and clairvoyant_oracle under identical state transitions
+        # Simulate equal_allocation and clairvoyant_oracle under unified InventoryStateTransitionSystem
         for pol in ["equal_allocation", "clairvoyant_oracle"]:
-            I_curr = inst.I.copy()
-            pipe = [arr.copy() for arr in init_in_transit]
-            tot_cost = 0.0
+            sim = InventoryStateTransitionSystem(
+                base_inst=inst,
+                lead_time_weeks=lead_time,
+                initial_pipeline=init_in_transit if lead_time > 0 else None,
+            )
             for t_i in range(T):
-                C_rem = np.maximum(inst.C - np.sum(I_curr, axis=1), 0)
-                K_rem = np.minimum(inst.K, C_rem[:, None])
-                inst_t = AllocationInstance(
-                    stores=inst.stores,
-                    skus=inst.skus,
-                    I=I_curr.copy(),
-                    W=inst.W.copy(),
-                    K=K_rem,
-                    C=inst.C.copy(),
-                    b=inst.b.copy(),
-                    h=inst.h.copy(),
-                    t=inst.t.copy(),
-                )
                 if pol == "equal_allocation":
+                    C_rem = np.maximum(inst.C - np.sum(sim.store_on_hand, axis=1), 0)
+                    K_rem = np.minimum(inst.K, C_rem[:, None])
+                    inst_t = AllocationInstance(
+                        stores=inst.stores,
+                        skus=inst.skus,
+                        I=sim.store_on_hand.copy(),
+                        W=inst.W.copy(),
+                        K=K_rem,
+                        C=inst.C.copy(),
+                        b=inst.b.copy(),
+                        h=inst.h.copy(),
+                        t=inst.t.copy(),
+                    )
                     x_ord = allocate_equal_shares(inst_t).x
                 else:
                     x_ord = oracle_mp["x_orders"][t_i]
 
-                if lead_time == 0:
-                    x_arr = x_ord
-                else:
-                    pipe.append(x_ord.copy())
-                    x_arr = pipe.pop(0)
+                sim.step(order_x=x_ord, realized_demand_D=D_horizon[t_i], period_idx=t_i)
 
-                c_t = evaluate_exact_cost(x_arr, D_horizon[t_i], inst_t)
-                tot_cost += c_t.total_cost_mu
-                I_curr = np.maximum(I_curr + x_arr - D_horizon[t_i], 0).astype(int)
-
+            sim_res = sim.get_summary()
+            assert sim_res["is_conserved"]
             if pol == "clairvoyant_oracle":
-                oracle_sim_cost = tot_cost
+                oracle_sim_cost = sim.total_cost_mu_cumulative
                 assert abs(oracle_sim_cost - oracle_mp["total_cost_mu"]) < 1e-4
             else:
-                eq_sim_cost = tot_cost
+                eq_sim_cost = sim.total_cost_mu_cumulative
 
         assert eq_sim_cost - oracle_sim_cost >= -1e-6, (
             f"Negative rolling oracle regret at L={lead_time}: eq={eq_sim_cost}, oracle={oracle_sim_cost}"

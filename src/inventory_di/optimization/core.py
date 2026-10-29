@@ -53,6 +53,34 @@ class SolveResult:
     runtime_seconds: float
 
 
+@dataclass(frozen=True)
+class ServiceLevelSolveResult:
+    """Output from service-level constrained allocation optimization (`AGENTS.md` §7, Phase 7)."""
+
+    x: np.ndarray  # shape (S, P), int
+    solver_objective: float
+    solver_status: str
+    is_feasible: bool
+    violations: list[str]
+    runtime_seconds: float
+    target_fill_rate: float
+    expected_fill_rate: float
+    is_service_level_met: bool
+    service_level_shortfall: float
+    model_expected_cost_mu: float
+    shortfall_units: float = 0.0
+
+    @property
+    def achieved_fill_rate(self) -> float:
+        """Alias for expected_fill_rate used in dashboard UI."""
+        return self.expected_fill_rate
+
+    @property
+    def expected_cost_mu(self) -> float:
+        """Alias for model_expected_cost_mu used in dashboard UI."""
+        return self.model_expected_cost_mu
+
+
 def check_allocation_feasibility(
     x: np.ndarray,
     inst: AllocationInstance,
@@ -593,43 +621,205 @@ def solve_multiperiod_carryover_oracle(
     if res.success and res.x is not None:
         x_orders = np.rint(res.x[: T * N]).astype(int).reshape(T, S, P)
 
-    # Independently simulate exact trajectory cost with x_orders
-    I_curr = base_inst.I.copy()
-    tot_cost = 0.0
-    tot_shortage = 0.0
-    tot_holding = 0.0
-    tot_filled = 0
-    tot_demand = 0
+    # Independently simulate exact trajectory cost using the unified InventoryStateTransitionSystem
+    from inventory_di.simulation.simulator import InventoryStateTransitionSystem
 
+    sim = InventoryStateTransitionSystem(
+        base_inst=base_inst,
+        lead_time_weeks=L,
+        initial_pipeline=init_pipe,
+    )
     for t_i in range(T):
-        x_arr = init_pipe[t_i] if t_i < L else x_orders[t_i - L]
-        inst_t = AllocationInstance(
-            stores=base_inst.stores,
-            skus=base_inst.skus,
-            I=I_curr.copy(),
-            W=base_inst.W,
-            K=base_inst.K,
-            C=base_inst.C,
-            b=base_inst.b,
-            h=base_inst.h,
-            t=base_inst.t,
+        sim.step(
+            order_x=x_orders[t_i],
+            realized_demand_D=D_trajectory[t_i],
+            period_idx=t_i,
         )
-        cb = evaluate_exact_cost(x_arr, D_trajectory[t_i], inst_t)
-        tot_cost += cb.total_cost_mu
-        tot_shortage += cb.shortage_cost_mu
-        tot_holding += cb.holding_cost_mu
-        tot_filled += cb.filled_units
-        tot_demand += int(np.sum(D_trajectory[t_i]))
-        I_curr = np.maximum(0, I_curr + x_arr - D_trajectory[t_i])
 
-    n_orig = max(1, T)
+    sim_res = sim.get_summary()
     return {
         "x_orders": x_orders,
-        "total_cost_mu": tot_cost,
-        "mean_cost_mu": tot_cost / n_orig,
-        "mean_shortage_cost_mu": tot_shortage / n_orig,
-        "mean_holding_cost_mu": tot_holding / n_orig,
-        "fill_rate": float(tot_filled / max(1, tot_demand)),
-        "ending_inventory_units": int(np.sum(I_curr)),
+        "total_cost_mu": sim.total_cost_mu_cumulative,
+        "mean_cost_mu": sim_res["mean_cost_mu"],
+        "mean_shortage_cost_mu": sim_res["mean_shortage_cost_mu"],
+        "mean_holding_cost_mu": sim_res["mean_holding_cost_mu"],
+        "fill_rate": sim_res["fill_rate"],
+        "ending_inventory_units": sim_res["ending_store_inventory_units"],
+        "ending_in_transit_units": sim_res["ending_in_transit_units"],
+        "is_conserved": sim_res["is_conserved"],
         "solver_status": "optimal" if res.success else f"failed ({res.message})",
     }
+
+
+def solve_service_level_constrained_milp(
+    scenarios: np.ndarray,
+    inst: AllocationInstance,
+    target_fill_rate: float = 0.85,
+    shortfall_penalty_mu: float = 500.0,
+) -> ServiceLevelSolveResult:
+    """Solve the service-level constrained allocation MILP (`AGENTS.md` §7, Phase 7).
+
+    Minimizes expected inventory cost subject to an expected fill rate constraint:
+        Expected Fulfilled Units / Expected Total Demand >= target_fill_rate - slack
+
+    When warehouse inventory or store capacities make the target service level physically
+    impossible, `slack > 0` flags the infeasibility, quantifies the exact shortfall,
+    and penalizes it via `shortfall_penalty_mu`, providing the optimal graceful relaxation.
+    """
+    t_start = time.perf_counter()
+    scenarios = np.asarray(scenarios, dtype=float)
+    N, S, P = scenarios.shape
+    M = S * P
+    probs = np.full(N, 1.0 / N)
+    exp_demand = float(np.mean(np.sum(scenarios, axis=(1, 2))))
+
+    idx_slack = M + 2 * N * M
+    total_vars = idx_slack + 1
+
+    c = np.zeros(total_vars, dtype=float)
+    integrality = np.zeros(total_vars, dtype=int)
+    lb = np.zeros(total_vars, dtype=float)
+    ub = np.full(total_vars, np.inf, dtype=float)
+
+    # Shipping cost on x
+    for s in range(S):
+        for p in range(P):
+            sp = s * P + p
+            c[sp] = float(inst.t[s, p])
+            integrality[sp] = 1
+            ub[sp] = float(inst.K[s, p])
+
+    # Scenario shortage and holding costs
+    for j in range(N):
+        pj = float(probs[j])
+        for s in range(S):
+            for p in range(P):
+                sp = s * P + p
+                idx_u = M + j * M + sp
+                idx_v = M + N * M + j * M + sp
+                c[idx_u] = pj * float(inst.b[s, p])
+                c[idx_v] = pj * float(inst.h[s, p])
+
+    c[idx_slack] = float(shortfall_penalty_mu) * max(1.0, exp_demand)
+    ub[idx_slack] = 1.0
+
+    row_ind: list[int] = []
+    col_ind: list[int] = []
+    data_val: list[float] = []
+    b_l_list: list[float] = []
+    b_u_list: list[float] = []
+    r_idx = 0
+
+    # 1. Warehouse supply per SKU: sum_s x_{s, p} <= W_p
+    for p in range(P):
+        for s in range(S):
+            row_ind.append(r_idx)
+            col_ind.append(s * P + p)
+            data_val.append(1.0)
+        b_l_list.append(-np.inf)
+        b_u_list.append(float(inst.W[p]))
+        r_idx += 1
+
+    # 2. Total store stock capacity: sum_p x_{s, p} <= C_s - sum_p I_{s, p}
+    for s in range(S):
+        for p in range(P):
+            row_ind.append(r_idx)
+            col_ind.append(s * P + p)
+            data_val.append(1.0)
+        b_l_list.append(-np.inf)
+        b_u_list.append(float(inst.C[s] - np.sum(inst.I[s, :])))
+        r_idx += 1
+
+    # 3. Scenario balance: v_{j, s, p} - u_{j, s, p} - x_{s, p} == I_{s, p} - D_{j, s, p}
+    for j in range(N):
+        for s in range(S):
+            for p in range(P):
+                sp = s * P + p
+                idx_u = M + j * M + sp
+                idx_v = M + N * M + j * M + sp
+                row_ind.extend([r_idx, r_idx, r_idx])
+                col_ind.extend([idx_v, idx_u, sp])
+                data_val.extend([1.0, -1.0, -1.0])
+                rhs = float(inst.I[s, p] - scenarios[j, s, p])
+                b_l_list.append(rhs)
+                b_u_list.append(rhs)
+                r_idx += 1
+
+    # 4. Target service-level constraint:
+    #    sum_{j, s, p} p_j * u_{j, s, p} - slack * exp_demand <= (1 - target_fill_rate) * exp_demand
+    for j in range(N):
+        pj = float(probs[j])
+        for s in range(S):
+            for p in range(P):
+                sp = s * P + p
+                idx_u = M + j * M + sp
+                row_ind.append(r_idx)
+                col_ind.append(idx_u)
+                data_val.append(pj)
+
+    row_ind.append(r_idx)
+    col_ind.append(idx_slack)
+    data_val.append(-max(1.0, exp_demand))
+
+    b_l_list.append(-np.inf)
+    b_u_list.append(float((1.0 - target_fill_rate) * exp_demand))
+    r_idx += 1
+
+    A = csc_matrix((data_val, (row_ind, col_ind)), shape=(r_idx, total_vars), dtype=float)
+    res = milp(
+        c=c,
+        integrality=integrality,
+        bounds=(lb, ub),
+        constraints=LinearConstraint(A, np.array(b_l_list, dtype=float), np.array(b_u_list, dtype=float)),
+    )
+    rt = time.perf_counter() - t_start
+
+    if res.success and res.x is not None:
+        x_sol = np.rint(res.x[:M]).astype(int).reshape(S, P)
+        slack_val = float(res.x[idx_slack])
+        exp_unmet = float(np.sum([
+            float(probs[j]) * np.sum(np.maximum(0, scenarios[j] - inst.I - x_sol))
+            for j in range(N)
+        ]))
+        achieved_fill = float(max(0.0, 1.0 - (exp_unmet / max(1.0, exp_demand))))
+        is_met = slack_val <= 1e-4 and achieved_fill >= target_fill_rate - 1e-4
+
+        model_exp_cost = float(np.sum(inst.t * x_sol) + np.mean([
+            np.sum(inst.b * np.maximum(0, scenarios[j] - inst.I - x_sol) +
+                   inst.h * np.maximum(0, inst.I + x_sol - scenarios[j]))
+            for j in range(N)
+        ]))
+
+        ok, viols = check_allocation_feasibility(x_sol, inst)
+        status_msg = "optimal" if is_met else f"optimal_with_shortfall_{slack_val:.2%}"
+        shortfall_frac = max(0.0, target_fill_rate - achieved_fill)
+        return ServiceLevelSolveResult(
+            x=x_sol,
+            solver_objective=float(res.fun),
+            solver_status=status_msg,
+            is_feasible=ok,
+            violations=viols,
+            runtime_seconds=rt,
+            target_fill_rate=float(target_fill_rate),
+            expected_fill_rate=achieved_fill,
+            is_service_level_met=is_met,
+            service_level_shortfall=shortfall_frac,
+            model_expected_cost_mu=model_exp_cost,
+            shortfall_units=float(shortfall_frac * exp_demand),
+        )
+    else:
+        x_fallback = np.zeros((S, P), dtype=int)
+        return ServiceLevelSolveResult(
+            x=x_fallback,
+            solver_objective=1e9,
+            solver_status=f"infeasible ({res.message if hasattr(res, 'message') else 'failed'})",
+            is_feasible=False,
+            violations=["Solver failed to find integer feasible solution"],
+            runtime_seconds=rt,
+            target_fill_rate=float(target_fill_rate),
+            expected_fill_rate=0.0,
+            is_service_level_met=False,
+            service_level_shortfall=float(target_fill_rate),
+            model_expected_cost_mu=1e9,
+            shortfall_units=float(target_fill_rate * exp_demand),
+        )

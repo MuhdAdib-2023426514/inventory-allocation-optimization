@@ -1,7 +1,7 @@
 # Inventory Allocation Experiment Results Summary
 
 - **Data Provenance / Mode:** DEMO / SYNTHETIC (`data_mode='synthetic_demo'`) (Demand Regime: `regular`)
-- **Run ID:** `demo_v1` (Global Seed: `42`, Git Commit: `351c485`)
+- **Run ID:** `demo_v1` (Global Seed: `42`, Git Commit: `3260515`)
 - **Economic Units:** Generic Monetary Units (`MU`), synthetic inventory/operating constraints (`data_provenance='synthetic'`).
 - **Held-out Test Origins:** `8` chronological weekly origins.
 - **Lowest Mean Out-of-Sample Cost Policy (Non-Oracle):** `dfl_pto` (**51.32 MU**, Fill Rate **85.4%**, Mean Oracle Regret **27.59 MU**).
@@ -80,18 +80,18 @@ For `clairvoyant_oracle`, the multi-period horizon MILP (`solve_multiperiod_carr
 | :---: | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `0` | `equal_allocation` | 50.80 | 36.42 | 10.07 | 31.72 | 93.6% | 52 |
 | `0` | `proportional_allocation` | 54.43 | 40.05 | 13.95 | 31.61 | 91.2% | 52 |
-| `0` | `supervised_pto` | 45.08 | 30.69 | 9.26 | 27.03 | 94.1% | 45 |
+| `0` | `supervised_pto` | 52.77 | 38.39 | 11.60 | 32.22 | 92.6% | 52 |
 | `0` | `supervised_dro` | 44.32 | 29.94 | 12.50 | 23.55 | 92.2% | 37 |
-| `0` | `dfl_pto` | 43.83 | 29.44 | 9.26 | 25.91 | 94.1% | 42 |
+| `0` | `dfl_pto` | 49.60 | 35.22 | 9.27 | 31.26 | 94.1% | 52 |
 | `0` | `dfl_dro` | 44.79 | 30.41 | 13.40 | 23.22 | 91.7% | 36 |
 | `0` | `clairvoyant_oracle` | 14.38 | 0.00 | 2.25 | 4.67 | 98.5% | 0 |
-| `1` | `equal_allocation` | 47.29 | 28.55 | 10.06 | 28.36 | 93.6% | 48 |
-| `1` | `proportional_allocation` | 48.92 | 30.18 | 14.81 | 25.55 | 90.7% | 47 |
-| `1` | `supervised_pto` | 48.01 | 29.27 | 12.29 | 26.91 | 92.2% | 49 |
-| `1` | `supervised_dro` | 46.59 | 27.86 | 12.43 | 25.69 | 92.2% | 42 |
-| `1` | `dfl_pto` | 47.84 | 29.11 | 13.88 | 25.43 | 91.2% | 44 |
-| `1` | `dfl_dro` | 48.47 | 29.74 | 13.21 | 26.69 | 91.7% | 45 |
-| `1` | `clairvoyant_oracle` | 18.74 | 0.00 | 6.14 | 5.31 | 96.1% | 0 |
+| `1` | `equal_allocation` | 48.85 | 31.27 | 9.37 | 31.38 | 94.1% | 47 |
+| `1` | `proportional_allocation` | 53.31 | 35.74 | 11.64 | 33.53 | 92.6% | 50 |
+| `1` | `supervised_pto` | 49.24 | 31.67 | 11.54 | 29.86 | 92.6% | 49 |
+| `1` | `supervised_dro` | 53.38 | 35.81 | 13.98 | 31.55 | 91.2% | 52 |
+| `1` | `dfl_pto` | 52.35 | 34.78 | 13.90 | 30.67 | 91.2% | 48 |
+| `1` | `dfl_dro` | 55.79 | 38.22 | 15.54 | 32.33 | 90.2% | 52 |
+| `1` | `clairvoyant_oracle` | 17.57 | 0.00 | 6.14 | 5.31 | 96.1% | 0 |
 
 ## 8. Full-Horizon Cost–Risk–Service-Level Trade-Off Frontier (`P1.3`)
 
@@ -139,6 +139,20 @@ Evaluated across all held-out test origins over $(\alpha, \text{risk\_weight})$:
 | `supervised_dro` | 0.95 | 0.50 | 55.99 | 117.30 | 81.8% | 72.9% | 34.39 | 12.28 |
 | `supervised_dro` | 0.95 | 0.75 | 58.71 | 117.35 | 79.5% | 70.8% | 37.62 | 12.01 |
 | `supervised_dro` | 0.95 | 1.00 | 63.76 | 117.25 | 75.8% | 64.6% | 42.46 | 12.41 |
+
+## 9. Demand Regime Generalization: Regular vs. Intermittent M5 SKUs (`P2.1`)
+
+Comparison across the 10 regular-selling `HOUSEHOLD` SKUs (`ADI <= 1.25`) vs. 10 intermittent/lumpy `HOUSEHOLD` SKUs (`ADI >= 1.35`, selected strictly on `split == 'train'`):
+
+| Policy | Regular Mean Cost (MU) | Regular CVaR_0.90 (MU) | Regular Fill Rate (%) | Intermittent Mean Cost (MU) | Intermittent CVaR_0.90 (MU) | Intermittent Fill Rate (%) |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `equal_allocation` | 1432.35 | 1843.00 | 71.2% | 174.45 | 269.21 | 56.2% |
+| `proportional_allocation` | 1298.91 | 1711.69 | 73.9% | 176.94 | 274.42 | 55.3% |
+| `supervised_pto` | 1322.76 | 1708.12 | 73.5% | 172.89 | 253.60 | 55.4% |
+| `supervised_dro` | 1315.14 | 1677.40 | 73.6% | 171.30 | 256.92 | 56.1% |
+| `dfl_pto` | 1312.70 | 1686.33 | 73.6% | 175.62 | 253.09 | 54.5% |
+| `dfl_dro` | 1328.63 | 1689.26 | 73.3% | 172.59 | 254.54 | 55.6% |
+| `clairvoyant_oracle` | 1020.15 | 1536.59 | 79.2% | 89.85 | 160.78 | 73.7% |
 
 ## 10. Methodological Caveats & Limitations
 

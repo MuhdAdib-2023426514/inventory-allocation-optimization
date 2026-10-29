@@ -21,7 +21,10 @@ import streamlit as st
 from inventory_di.config import ExperimentConfig, load_config
 from inventory_di.evaluation.backtest import build_allocation_instance_from_config_df
 from inventory_di.optimization.baselines import solve_clairvoyant_oracle
-from inventory_di.optimization.core import evaluate_exact_cost
+from inventory_di.optimization.core import (
+    evaluate_exact_cost,
+    solve_service_level_constrained_milp,
+)
 from inventory_di.optimization.dro import solve_scenario_reweighting_dro_milp
 from inventory_di.visualization.plots import (
     plot_cost_risk_service_tradeoff,
@@ -443,6 +446,80 @@ def render_page_d(bundle: dict[str, Any]) -> None:
             label="Download What-If Simulated Shipment Plan (Excel-Compatible CSV)",
             data=sim_df.to_csv(index=False).encode("utf-8"),
             file_name=f"what_if_simulation_{sel_origin}.csv",
+            mime="text/csv",
+        )
+
+    st.subheader("Service-Level Constrained Allocation (Retail Decision Tool)")
+    st.markdown(
+        "Evaluate required inventory allocations and physical stock sufficiency under hard service-level requirements. "
+        "MR.DIY category managers can prescribe a target fill rate $\\beta^*$, and the MILP determines the cost-minimal "
+        "feasible store allocation or proves exact physical warehouse supply shortfall with slack relaxation."
+    )
+    c_sl1, c_sl2 = st.columns([2, 2])
+    with c_sl1:
+        sel_target_sl = st.slider(
+            "Target Expected Fill Rate / Service Level",
+            min_value=0.70,
+            max_value=0.99,
+            value=0.85,
+            step=0.01,
+            format="%.0f%%",
+            help="Minimum portfolio fill rate required across all stores and SKUs over the demand distribution.",
+        )
+    with c_sl2:
+        shortfall_pen = st.number_input(
+            "Shortfall Penalty Weight (MU/unit)",
+            min_value=50.0,
+            max_value=2000.0,
+            value=500.0,
+            step=50.0,
+            help="High penalty driving slack to zero if physical warehouse stock allows achieving the target.",
+        )
+
+    sl_res = solve_service_level_constrained_milp(
+        scenarios=scen_arr,
+        inst=inst_mod,
+        target_fill_rate=float(sel_target_sl),
+        shortfall_penalty_mu=float(shortfall_pen),
+    )
+
+    sl1, sl2, sl3, sl4 = st.columns(4)
+    sl1.metric("Target Fill Rate", f"{sl_res.target_fill_rate * 100:.1f}%")
+    sl2.metric("Achieved Fill Rate", f"{sl_res.achieved_fill_rate * 100:.1f}%")
+    sl3.metric("Physical Shortfall Units", f"{sl_res.shortfall_units:.1f} units")
+    sl4.metric("Expected Total Cost (MU)", f"{sl_res.expected_cost_mu:.2f} MU")
+
+    if sl_res.shortfall_units > 1e-4:
+        st.warning(
+            f"⚠️ **Physical Supply Deficit:** Target fill rate of {sl_res.target_fill_rate * 100:.1f}% cannot be met with "
+            f"current warehouse supply constraints ($W_p$). Warehouse inventory shortfall is {sl_res.shortfall_units:.1f} units. "
+            f"Maximum achievable service level with existing stock is {sl_res.achieved_fill_rate * 100:.1f}%."
+        )
+    else:
+        st.success(
+            f"✅ **Target Achievable:** Target fill rate of {sl_res.target_fill_rate * 100:.1f}% is feasible within existing warehouse supply and store capacity."
+        )
+
+    with st.expander("Inspect Service-Level Shipment Plan & Download CSV", expanded=False):
+        sl_rows = []
+        for s_i, s_id in enumerate(inst_mod.stores):
+            for p_i, p_id in enumerate(inst_mod.skus):
+                sl_rows.append(
+                    {
+                        "store_id": s_id,
+                        "sku_id": p_id,
+                        "allocated_units": int(sl_res.x[s_i, p_i]),
+                        "opening_stock_units": int(inst_mod.I[s_i, p_i]),
+                        "warehouse_supply_units": int(inst_mod.W[p_i]),
+                        "store_sku_unit_cap": int(inst_mod.K[s_i, p_i]),
+                    }
+                )
+        sl_plan_df = pd.DataFrame(sl_rows)
+        st.dataframe(sl_plan_df, use_container_width=True)
+        st.download_button(
+            label="Download Service-Level Allocation Plan (CSV)",
+            data=sl_plan_df.to_csv(index=False).encode("utf-8"),
+            file_name=f"service_level_plan_{sel_origin}_{int(sel_target_sl * 100)}pct.csv",
             mime="text/csv",
         )
 

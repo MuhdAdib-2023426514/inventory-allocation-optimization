@@ -44,6 +44,7 @@ from inventory_di.optimization.dro import (
     evaluate_allocation_on_scenarios,
     solve_scenario_reweighting_dro_milp,
 )
+from inventory_di.simulation.simulator import InventoryStateTransitionSystem
 
 
 def build_allocation_instance_from_config_df(
@@ -434,6 +435,48 @@ def calibrate_scenarios_and_tune_dro_on_val(
     }
 
 
+def _project_features_one_week_ahead(
+    origin_df: pd.DataFrame,
+    expected_demand: np.ndarray,
+    stores: list[str],
+    skus: list[str],
+) -> pd.DataFrame:
+    """Project weekly features strictly 1-week ahead using decision-time forecast expectations.
+
+    Eliminates future-information leakage: at origin t, lag_1w for arrival week t+1
+    is the model's own expected demand D_hat(t) derived strictly from F_t,
+    NOT the ground-truth realization D(t).
+    """
+    proj = origin_df.copy()
+    store_map = {s: i for i, s in enumerate(stores)}
+    sku_map = {p: i for i, p in enumerate(skus)}
+
+    for row_idx in range(len(proj)):
+        s_id = str(proj.iat[row_idx, proj.columns.get_loc("store_id")])
+        p_id = str(proj.iat[row_idx, proj.columns.get_loc("sku_id")])
+        s_i = store_map[s_id]
+        p_i = sku_map[p_id]
+        d_hat = float(expected_demand[s_i, p_i])
+        old_lag1 = float(proj.iat[row_idx, proj.columns.get_loc("lag_1w_units")])
+        old_r4 = float(proj.iat[row_idx, proj.columns.get_loc("rolling_4w_mean")])
+        old_r8 = float(proj.iat[row_idx, proj.columns.get_loc("rolling_8w_mean")])
+
+        # At t+1, lag 2w is week t-1 demand (which was old lag 1w)
+        proj.iat[row_idx, proj.columns.get_loc("lag_2w_units")] = old_lag1
+        # At t+1, lag 1w is the projected expectation for week t
+        proj.iat[row_idx, proj.columns.get_loc("lag_1w_units")] = d_hat
+        # Roll moving averages forward with expectation
+        proj.iat[row_idx, proj.columns.get_loc("rolling_4w_mean")] = 0.75 * old_r4 + 0.25 * d_hat
+        proj.iat[row_idx, proj.columns.get_loc("rolling_8w_mean")] = (7.0 / 8.0) * old_r8 + (1.0 / 8.0) * d_hat
+
+    # Advance calendar seasonality by 7 days
+    dt = pd.to_datetime(proj["target_start"]) + pd.Timedelta(days=7)
+    iso_w = dt.dt.isocalendar().week.astype(float)
+    proj["week_of_year_sin"] = np.sin(2.0 * np.pi * iso_w / 52.0)
+    proj["week_of_year_cos"] = np.cos(2.0 * np.pi * iso_w / 52.0)
+    return proj
+
+
 def run_multi_seed_and_carryover_experiments(
     cfg: ExperimentConfig,
     weekly_df: pd.DataFrame,
@@ -687,38 +730,33 @@ def run_multi_seed_and_carryover_experiments(
                         "mean_holding_cost_mu": float(oracle_mp["mean_holding_cost_mu"]),
                         "fill_rate": float(oracle_mp["fill_rate"]),
                         "ending_inventory_units": int(oracle_mp["ending_inventory_units"]),
+                        "ending_in_transit_units": int(oracle_mp["ending_in_transit_units"]),
+                        "is_conserved": bool(oracle_mp["is_conserved"]),
                         "data_mode": cfg.data_mode,
                     }
                 )
                 continue
 
-            I_curr = base_inst.I.copy()
-            pipeline_queue: list[np.ndarray] = [arr.copy() for arr in init_pipe]
-            tot_cost = 0.0
-            tot_shortage = 0.0
-            tot_holding = 0.0
-            tot_filled = 0
-            tot_demand = 0
+            sim = InventoryStateTransitionSystem(
+                base_inst=base_inst,
+                lead_time_weeks=lead_time,
+                initial_pipeline=init_pipe,
+            )
 
             for o_idx, inp in enumerate(origin_inputs):
                 D_real = inp["D_realized"]
-                # 1. If lead_time > 0, receive shipment ordered `lead_time` weeks ago first
-                if lead_time > 0:
-                    x_arrived = pipeline_queue.pop(0)
-                    rem_c_arr = np.maximum(0, base_inst.C - np.sum(I_curr, axis=1))
-                    for s_i in range(S):
-                        if np.sum(x_arrived[s_i, :]) > rem_c_arr[s_i]:
-                            scale = float(rem_c_arr[s_i]) / max(1.0, float(np.sum(x_arrived[s_i, :])))
-                            x_arrived[s_i, :] = np.floor(x_arrived[s_i, :] * scale).astype(int)
-                else:
-                    x_arrived = np.zeros((S, P), dtype=int)
+                I_curr = sim.store_on_hand.copy()
 
-                # 2. Project opening stock at the week when the new order `x_order` will arrive (`t + lead_time`)
                 if lead_time == 0:
-                    I_target_week = I_curr.copy()
-                    target_idx = o_idx
+                    I_order_alloc = I_curr.copy()
+                    mc_sup = inp["sup_mc"]
+                    mc_dfl = inp["dfl_mc"]
+                    sup_scen_order = inp["sup_scen"]
+                    dfl_scen_order = inp["dfl_scen"]
                 else:
-                    exp_d_t = (
+                    # Lead time 1: Order placed at o_idx arrives at o_idx + 1
+                    # Expected demand at current week derived strictly from F_{o_idx}
+                    exp_d_curr = (
                         inp["dfl_exp"]
                         if pol_name in {"dfl_pto", "dfl_dro"}
                         else (
@@ -727,21 +765,86 @@ def run_multi_seed_and_carryover_experiments(
                             else inp["trailing_signals"]
                         )
                     )
-                    I_target_week = np.maximum(
-                        0, np.rint(I_curr + x_arrived - exp_d_t).astype(int)
+                    # Arriving shipment at current week (from pipeline or deferred queue)
+                    arriving_curr = (
+                        sim.pipeline[0].copy()
+                        if len(sim.pipeline) > 0
+                        else np.zeros((S, P), dtype=int)
                     )
+                    # Projected opening stock at arrival week t+1 based strictly on F_{o_idx}
+                    I_proj = np.maximum(0, I_curr + arriving_curr - exp_d_curr).astype(int)
                     for s_i in range(S):
-                        if np.sum(I_target_week[s_i, :]) > base_inst.C[s_i]:
-                            scale = float(base_inst.C[s_i]) / float(np.sum(I_target_week[s_i, :]))
-                            I_target_week[s_i, :] = np.floor(I_target_week[s_i, :] * scale).astype(int)
-                    target_idx = min(len(origin_inputs) - 1, o_idx + lead_time)
+                        if np.sum(I_proj[s_i, :]) > base_inst.C[s_i]:
+                            scale = float(base_inst.C[s_i]) / float(np.sum(I_proj[s_i, :]))
+                            I_proj[s_i, :] = np.floor(I_proj[s_i, :] * scale).astype(int)
+                    I_order_alloc = I_proj.copy()
 
-                target_inp = origin_inputs[target_idx]
-                target_df = target_inp["origin_df"]
+                    # Projected features for arrival week t+1 strictly from F_{o_idx} (zero future leakage)
+                    features_proj = _project_features_one_week_ahead(
+                        inp["origin_df"],
+                        expected_demand=exp_d_curr,
+                        stores=base_inst.stores,
+                        skus=base_inst.skus,
+                    )
+                    mc_sup = {
+                        sku: predict_sku_origin_outputs(
+                            sup_artifacts[sku],
+                            features_proj,
+                            I_s=I_order_alloc[:, p_i],
+                            K_s=base_inst.K[:, p_i],
+                            b_s=base_inst.b[:, p_i],
+                            h_s=base_inst.h[:, p_i],
+                            t_s=base_inst.t[:, p_i],
+                        )["c_hat_flat"]
+                        for p_i, sku in enumerate(base_inst.skus)
+                    }
+                    mc_dfl = {
+                        sku: predict_sku_origin_outputs(
+                            dfl_artifacts[sku],
+                            features_proj,
+                            I_s=I_order_alloc[:, p_i],
+                            K_s=base_inst.K[:, p_i],
+                            b_s=base_inst.b[:, p_i],
+                            h_s=base_inst.h[:, p_i],
+                            t_s=base_inst.t[:, p_i],
+                        )["c_hat_flat"]
+                        for p_i, sku in enumerate(base_inst.skus)
+                    }
+                    sup_pmfs_proj = {
+                        sku: predict_sku_origin_outputs(
+                            sup_artifacts[sku],
+                            features_proj,
+                            I_order_alloc[:, p_i],
+                            base_inst.K[:, p_i],
+                            base_inst.b[:, p_i],
+                            base_inst.h[:, p_i],
+                            base_inst.t[:, p_i],
+                        )["pmf"]
+                        for p_i, sku in enumerate(base_inst.skus)
+                    }
+                    dfl_pmfs_proj = {
+                        sku: predict_sku_origin_outputs(
+                            dfl_artifacts[sku],
+                            features_proj,
+                            I_order_alloc[:, p_i],
+                            base_inst.K[:, p_i],
+                            base_inst.b[:, p_i],
+                            base_inst.h[:, p_i],
+                            base_inst.t[:, p_i],
+                        )["pmf"]
+                        for p_i, sku in enumerate(base_inst.skus)
+                    }
+                    sup_scen_order = copula_sup.sample_scenarios(
+                        sup_pmfs_proj, num_scenarios=cfg.dro.num_scenarios, seed=cfg.global_seed + o_idx + 777
+                    )
+                    dfl_scen_order = copula_dfl.sample_scenarios(
+                        dfl_pmfs_proj, num_scenarios=cfg.dro.num_scenarios, seed=cfg.global_seed + o_idx + 777
+                    )
+
                 inst_order = AllocationInstance(
                     stores=base_inst.stores,
                     skus=base_inst.skus,
-                    I=I_target_week.copy(),
+                    I=I_order_alloc.copy(),
                     W=base_inst.W,
                     K=base_inst.K,
                     C=base_inst.C,
@@ -750,7 +853,7 @@ def run_multi_seed_and_carryover_experiments(
                     t=base_inst.t,
                 )
 
-                # No need to order on the final week when lead_time == 1 (arrives after horizon ends)
+                # Order decision
                 if o_idx + lead_time >= len(origin_inputs):
                     x_order = np.zeros((S, P), dtype=int)
                 elif pol_name == "equal_allocation":
@@ -758,90 +861,42 @@ def run_multi_seed_and_carryover_experiments(
                 elif pol_name == "proportional_allocation":
                     x_order = allocate_proportional_shares(inp["trailing_signals"], inst_order).x
                 elif pol_name == "supervised_pto":
-                    mc_t = {
-                        sku: predict_sku_origin_outputs(
-                            sup_artifacts[sku],
-                            target_df,
-                            I_s=I_target_week[:, p_i],
-                            K_s=inst_order.K[:, p_i],
-                            b_s=inst_order.b[:, p_i],
-                            h_s=inst_order.h[:, p_i],
-                            t_s=inst_order.t[:, p_i],
-                        )["c_hat_flat"]
-                        for p_i, sku in enumerate(inst_order.skus)
-                    }
-                    x_order = solve_nominal_marginal_cost_milp(mc_t, inst_order).x
+                    x_order = solve_nominal_marginal_cost_milp(mc_sup, inst_order).x
                 elif pol_name == "dfl_pto":
-                    mc_t = {
-                        sku: predict_sku_origin_outputs(
-                            dfl_artifacts[sku],
-                            target_df,
-                            I_s=I_target_week[:, p_i],
-                            K_s=inst_order.K[:, p_i],
-                            b_s=inst_order.b[:, p_i],
-                            h_s=inst_order.h[:, p_i],
-                            t_s=inst_order.t[:, p_i],
-                        )["c_hat_flat"]
-                        for p_i, sku in enumerate(inst_order.skus)
-                    }
-                    x_order = solve_nominal_marginal_cost_milp(mc_t, inst_order).x
+                    x_order = solve_nominal_marginal_cost_milp(mc_dfl, inst_order).x
                 elif pol_name == "supervised_dro":
                     x_order = solve_scenario_reweighting_dro_milp(
-                        target_inp["sup_scen"],
+                        sup_scen_order,
                         inst_order,
                         alpha=float(sup_dro_params["alpha"]),
                         risk_weight=float(sup_dro_params["risk_weight"]),
                     ).x
                 else:  # dfl_dro
                     x_order = solve_scenario_reweighting_dro_milp(
-                        target_inp["dfl_scen"],
+                        dfl_scen_order,
                         inst_order,
                         alpha=float(dfl_dro_params["alpha"]),
                         risk_weight=float(dfl_dro_params["risk_weight"]),
                     ).x
 
-                if lead_time == 0:
-                    x_arrived = x_order
-                else:
-                    pipeline_queue.append(x_order)
+                # Physical state transition with strict conservation verified
+                sim.step(order_x=x_order, realized_demand_D=D_real, period_idx=o_idx)
 
-                inst_eval = AllocationInstance(
-                    stores=base_inst.stores,
-                    skus=base_inst.skus,
-                    I=I_curr.copy(),
-                    W=base_inst.W,
-                    K=base_inst.K,
-                    C=base_inst.C,
-                    b=base_inst.b,
-                    h=base_inst.h,
-                    t=base_inst.t,
-                )
-                cb = evaluate_exact_cost(x_arrived, D_real, inst_eval)
-                tot_cost += cb.total_cost_mu
-                tot_shortage += cb.shortage_cost_mu
-                tot_holding += cb.holding_cost_mu
-                tot_filled += cb.filled_units
-                tot_demand += int(np.sum(D_real))
-
-                I_next = np.maximum(0, I_curr + x_arrived - D_real)
-                for s_i in range(S):
-                    if np.sum(I_next[s_i, :]) > inst_eval.C[s_i]:
-                        scale = float(inst_eval.C[s_i]) / float(np.sum(I_next[s_i, :]))
-                        I_next[s_i, :] = np.floor(I_next[s_i, :] * scale).astype(int)
-                I_curr = I_next
-
-            n_orig = max(1, len(origin_inputs))
-            mean_pol_cost = tot_cost / n_orig
+            sim_summary = sim.get_summary()
+            mean_pol_cost = float(sim_summary["mean_cost_mu"])
+            raw_regret = float(mean_pol_cost - oracle_mp_cost)
             carryover_rows.append(
                 {
                     "lead_time_weeks": int(lead_time),
                     "policy": pol_name,
                     "mean_cost_mu": mean_pol_cost,
-                    "rolling_oracle_regret_mu": max(0.0, mean_pol_cost - oracle_mp_cost),
-                    "mean_shortage_cost_mu": tot_shortage / n_orig,
-                    "mean_holding_cost_mu": tot_holding / n_orig,
-                    "fill_rate": float(tot_filled / max(1, tot_demand)),
-                    "ending_inventory_units": int(np.sum(I_curr)),
+                    "rolling_oracle_regret_mu": raw_regret,
+                    "mean_shortage_cost_mu": float(sim_summary["mean_shortage_cost_mu"]),
+                    "mean_holding_cost_mu": float(sim_summary["mean_holding_cost_mu"]),
+                    "fill_rate": float(sim_summary["fill_rate"]),
+                    "ending_inventory_units": int(sim_summary["ending_store_inventory_units"]),
+                    "ending_in_transit_units": int(sim_summary["ending_in_transit_units"]),
+                    "is_conserved": bool(sim_summary["is_conserved"]),
                     "data_mode": cfg.data_mode,
                 }
             )

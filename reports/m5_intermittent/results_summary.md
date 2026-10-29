@@ -1,7 +1,7 @@
 # Inventory Allocation Experiment Results Summary
 
 - **Data Provenance / Mode:** M5 Sales Proxy + Simulated Inventory (`data_mode='m5_sales_proxy'`) (Demand Regime: `intermittent`)
-- **Run ID:** `m5_intermittent_v1` (Global Seed: `42`, Git Commit: `351c485`)
+- **Run ID:** `m5_intermittent_v1` (Global Seed: `42`, Git Commit: `3260515`)
 - **Economic Units:** Generic Monetary Units (`MU`), synthetic inventory/operating constraints (`data_provenance='synthetic'`).
 - **Held-out Test Origins:** `12` chronological weekly origins.
 - **Lowest Mean Out-of-Sample Cost Policy (Non-Oracle):** `supervised_dro` (**171.30 MU**, Fill Rate **56.1%**, Mean Oracle Regret **81.45 MU**).
@@ -80,18 +80,18 @@ For `clairvoyant_oracle`, the multi-period horizon MILP (`solve_multiperiod_carr
 | :---: | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `0` | `equal_allocation` | 241.20 | 165.14 | 77.46 | 146.24 | 71.8% | 234 |
 | `0` | `proportional_allocation` | 240.44 | 164.38 | 75.11 | 148.10 | 72.5% | 230 |
-| `0` | `supervised_pto` | 150.40 | 74.34 | 101.93 | 38.11 | 62.5% | 45 |
+| `0` | `supervised_pto` | 217.14 | 141.08 | 81.45 | 119.91 | 70.2% | 201 |
 | `0` | `supervised_dro` | 149.14 | 73.07 | 90.82 | 47.01 | 66.7% | 56 |
-| `0` | `dfl_pto` | 149.50 | 73.43 | 92.45 | 46.15 | 66.1% | 53 |
+| `0` | `dfl_pto` | 229.97 | 153.91 | 82.42 | 131.60 | 69.8% | 221 |
 | `0` | `dfl_dro` | 151.95 | 75.89 | 91.38 | 49.41 | 66.5% | 56 |
 | `0` | `clairvoyant_oracle` | 76.06 | 0.00 | 57.49 | 7.16 | 79.0% | 0 |
-| `1` | `equal_allocation` | 237.27 | 149.00 | 75.86 | 143.95 | 72.4% | 231 |
-| `1` | `proportional_allocation` | 243.48 | 155.21 | 76.22 | 150.06 | 72.2% | 232 |
-| `1` | `supervised_pto` | 158.35 | 70.08 | 98.91 | 48.85 | 63.7% | 48 |
-| `1` | `supervised_dro` | 157.62 | 69.35 | 91.46 | 54.82 | 66.5% | 58 |
-| `1` | `dfl_pto` | 158.67 | 70.40 | 90.53 | 56.82 | 66.9% | 64 |
-| `1` | `dfl_dro` | 161.27 | 73.00 | 90.58 | 59.23 | 66.9% | 66 |
-| `1` | `clairvoyant_oracle` | 88.27 | 0.00 | 61.19 | 15.81 | 77.6% | 1 |
+| `1` | `equal_allocation` | 235.85 | 149.00 | 75.86 | 143.95 | 72.4% | 231 |
+| `1` | `proportional_allocation` | 242.07 | 155.21 | 76.22 | 150.06 | 72.2% | 232 |
+| `1` | `supervised_pto` | 166.53 | 79.68 | 91.15 | 65.01 | 66.7% | 74 |
+| `1` | `supervised_dro` | 166.24 | 79.39 | 89.51 | 66.16 | 67.3% | 77 |
+| `1` | `dfl_pto` | 174.57 | 87.71 | 92.28 | 71.75 | 66.3% | 91 |
+| `1` | `dfl_dro` | 178.41 | 91.55 | 91.32 | 76.31 | 66.7% | 93 |
+| `1` | `clairvoyant_oracle` | 86.85 | 0.00 | 61.19 | 15.81 | 77.6% | 1 |
 
 ## 8. Full-Horizon Cost–Risk–Service-Level Trade-Off Frontier (`P1.3`)
 
